@@ -17,3 +17,5 @@ vendor/
 .vscode/
 .idea/
 *.swp
+.env
+docker-compose.override.yml
