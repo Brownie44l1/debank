@@ -1,0 +1,19 @@
+# Binaries
+/myapp
+*.exe
+*.out
+
+# Dependencies
+vendor/
+
+# Config & secrets
+.env
+*.DS_Store
+
+# Logs
+*.log
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp

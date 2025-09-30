@@ -1,0 +1,42 @@
+services:
+  db:
+    image: postgres:15
+    container_name: debank-db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: apata28
+      POSTGRES_DB: bank_ledger
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  app:
+    build: .
+    container_name: debank-server
+    depends_on:
+      - db
+    environment:
+      DB_URL: postgres://postgres:apata28@db:5432/bank_ledger?sslmode=disable
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app
+    command: ["./debank"]
+  
+  migrate:
+    image: migrate/migrate
+    container_name: debank-migrate
+    volumes:
+      - ./internal/db/migrations:/migrations
+    command: [
+      "-path=/migrations",
+      "-database=postgres://postgres:apata28@db:5432/bank_ledger?sslmode=disable",
+      "up"
+    ]
+    depends_on:
+      - db
+
+volumes:
+  db_data:
