@@ -11,32 +11,40 @@ services:
       - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   app:
     build: .
     container_name: debank-server
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     environment:
       DB_URL: postgres://postgres:apata28@db:5432/bank_ledger?sslmode=disable
     ports:
       - "8080:8080"
-    volumes:
-      - .:/app
+    # Remove this line: volumes: - .:/app
     command: ["./debank"]
-  
+
   migrate:
     image: migrate/migrate
     container_name: debank-migrate
     volumes:
       - ./internal/db/migrations:/migrations
-    command: [
+    entrypoint: [
+      "migrate",
       "-path=/migrations",
-      "-database=postgres://postgres:apata28@db:5432/bank_ledger?sslmode=disable",
-      "up"
+      "-database=postgres://postgres:apata28@db:5432/bank_ledger?sslmode=disable"
     ]
+    command: ["up"]
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    restart: "no"
 
 volumes:
   db_data:

@@ -1,4 +1,4 @@
-FROM golang:1.23 AS builder
+FROM golang:1.24 AS builder
 
 WORKDIR /app
 
@@ -13,7 +13,6 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o debank ./cmd/server
 FROM alpine:3.19
 WORKDIR /app
 COPY --from=builder /app/debank .
-COPY .env.example .env
 
 EXPOSE 8080
 CMD ["./debank"]

@@ -1,4 +1,3 @@
--- 001_core_ledger.sql
 BEGIN;
 
 -- Accounts table
@@ -7,7 +6,9 @@ CREATE TABLE IF NOT EXISTS accounts (
     external_id TEXT UNIQUE,           -- optional external reference
     name TEXT NOT NULL,
     type TEXT NOT NULL,                -- e.g., 'user', 'system', 'reserve', 'fee'
-    currency CHAR(3) NOT NULL,         -- ISO 4217 code
+    balance BIGINT NOT NULL DEFAULT 0,
+    currency CHAR(3) NOT NULL,         -- ISO 4217 code, fixed to 'NGN' for now
+    user_id INT UNIQUE REFERENCES users(id), -- one wallet per user, NULL for system accounts
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -27,13 +28,10 @@ CREATE TABLE IF NOT EXISTS postings (
     id BIGSERIAL PRIMARY KEY,
     transaction_id BIGINT NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
     account_id BIGINT NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
-    amount BIGINT NOT NULL,            -- integer in smallest currency unit (e.g., cents). Positive or negative.
+    amount BIGINT NOT NULL,            -- integer in smallest currency unit (e.g., kobo for NGN). Positive or negative.
     currency CHAR(3) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
--- Ensure postings use same currency as account (optional, if enforcing)
--- Note: cross-currency ledgers require a different design; keep single-currency per account for simplicity.
 
 -- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_postings_account_id_created_at ON postings(account_id, created_at);
