@@ -31,7 +31,14 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+
       - name: Setup DB
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: bank_ledger
         run: bash internal/db/scripts/test_setup.sh
+
       - name: Run tests
         run: go test ./... -v
