@@ -1,38 +1,21 @@
 name: Go CI
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: apata28
-          POSTGRES_DB: bank_ledger
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd="pg_isready -U postgres"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=5
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
-      - name: Install deps
-        run: go mod tidy
-      - name: Run migrations
-        run: |
-          go install github.com/golang-migrate/migrate/v4/cmd/migrate@latest
-          migrate -path=internal/db/migrations \
-            -database "postgres://postgres:apata28@localhost:5432/bank_ledger?sslmode=disable" up
+          go-version: '1.22'
+      - name: Setup DB
+        run: bash internal/db/scripts/test_setup.sh
       - name: Run tests
-        env:
-          DB_URL: postgres://postgres:apata28@localhost:5432/bank_ledger?sslmode=disable
-        run: go test ./...
+        run: go test ./... -v
