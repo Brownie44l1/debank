@@ -21,5 +21,7 @@ func LoadConfig() Config {
     if err := viper.Unmarshal(&c); err != nil {
         log.Fatal("config unmarshal error:", err)
     }
+
+    log.Printf("DEBUG: Using DB_URL: %s", c.DBUrl)
     return c
 }

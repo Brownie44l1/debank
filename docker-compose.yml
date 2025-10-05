@@ -30,21 +30,21 @@ services:
     # Remove this line: volumes: - .:/app
     command: ["./debank"]
 
-  migrate:
-    image: migrate/migrate
-    container_name: debank-migrate
-    volumes:
-      - ./internal/db/migrations:/migrations
-    entrypoint: [
-      "migrate",
-      "-path=/migrations",
-      "-database=postgres://postgres:apata28@db:5432/bank_ledger?sslmode=disable"
-    ]
-    command: ["up"]
-    depends_on:
-      db:
-        condition: service_healthy
-    restart: "no"
+  # migrate:
+  #   image: migrate/migrate
+  #   container_name: debank-migrate
+  #   volumes:
+  #     - ./internal/db/migrations:/migrations
+  #   entrypoint: [
+  #     "migrate",
+  #     "-path=/migrations",
+  #     "-database=postgres://postgres:apata28@db:5432/bank_ledger?sslmode=disable"
+  #   ]
+  #   command: ["up"]
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy
+  #   restart: "no"
 
 volumes:
   db_data:
