@@ -4,17 +4,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 
+	"github.com/Brownie44l1/debank/internal/models"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// ==============================================
+// ERRORS
+// ==============================================
+
 var (
-	ErrInsufficientBalance     = errors.New("insufficient balance")
-	ErrAccountNotFound         = errors.New("account not found")
-	ErrDuplicateIdempotencyKey = errors.New("duplicate idempotency key")
+	ErrAccountNotFound = errors.New("account not found")
+	ErrNoRows          = errors.New("no rows found")
 )
+
+// ==============================================
+// REPOSITORY (Data Access ONLY)
+// ==============================================
 
 type WalletRepository struct {
 	db *pgxpool.Pool
@@ -24,286 +31,38 @@ func NewWalletRepository(db *pgxpool.Pool) *WalletRepository {
 	return &WalletRepository{db: db}
 }
 
-// GetAccountByUserID retrieves a user's account
-func (r *WalletRepository) GetAccountByUserID(ctx context.Context, userID int) (int64, int64, error) {
-	query := `SELECT id, balance FROM accounts WHERE user_id = $1`
+// ==============================================
+// TRANSACTION MANAGEMENT
+// ==============================================
 
-	var accountID, balance int64
-	err := r.db.QueryRow(ctx, query, userID).Scan(&accountID, &balance)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, 0, ErrAccountNotFound
-		}
-		return 0, 0, fmt.Errorf("failed to get account: %w", err)
-	}
-
-	return accountID, balance, nil
+// BeginTx starts a new database transaction
+func (r *WalletRepository) BeginTx(ctx context.Context) (pgx.Tx, error) {
+	return r.db.Begin(ctx)
 }
 
-// GetSystemAccount retrieves a system account by external_id
-func (r *WalletRepository) GetSystemAccount(ctx context.Context, externalID string) (int64, error) {
-	query := `SELECT id FROM accounts WHERE external_id = $1 AND type = 'system'`
+// ==============================================
+// ACCOUNT QUERIES
+// ==============================================
 
-	var accountID int64
-	err := r.db.QueryRow(ctx, query, externalID).Scan(&accountID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, ErrAccountNotFound
-		}
-		return 0, fmt.Errorf("failed to get system account: %w", err)
-	}
+// GetAccountByID retrieves an account by its ID
+func (r *WalletRepository) GetAccountByID(ctx context.Context, accountID int64) (*models.Account, error) {
+	query := `
+		SELECT id, external_id, name, type, balance, currency, user_id, created_at
+		FROM accounts
+		WHERE id = $1
+	`
 
-	return accountID, nil
-}
-
-// CheckIdempotency checks if an idempotency key already exists
-// Returns (transactionID, alreadyExists, error)
-func (r *WalletRepository) CheckIdempotency(ctx context.Context, idempotencyKey string) (int64, bool, error) {
-	query := `SELECT id FROM transactions WHERE idempotency_key = $1`
-
-	var txnID int64
-	err := r.db.QueryRow(ctx, query, idempotencyKey).Scan(&txnID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, false, nil // Key doesn't exist, safe to proceed
-		}
-		return 0, false, fmt.Errorf("failed to check idempotency: %w", err)
-	}
-
-	return txnID, true, nil // Key exists, return existing transaction ID
-}
-
-// Deposit adds money to a user's account from the reserve
-func (r *WalletRepository) Deposit(ctx context.Context, userID int, amount int64, idempotencyKey, reference string) (int64, int64, error) {
-	log.Printf("DEBUG: Starting deposit - userID=%d, amount=%d, idempotencyKey=%s", userID, amount, idempotencyKey)
-
-	// Start a transaction
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		log.Printf("ERROR: Failed to begin transaction: %v", err)
-		return 0, 0, fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	// 1. Check idempotency
-	log.Printf("DEBUG: Checking idempotency key: %s", idempotencyKey)
-	var existingTxnID int64
-	err = tx.QueryRow(ctx, `SELECT id FROM transactions WHERE idempotency_key = $1`, idempotencyKey).Scan(&existingTxnID)
-	// Right before line 92 in your Deposit function
-	/* log.Printf("DEBUG: Checking accounts table structure")
-	var colExists bool
-	err = tx.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 
-			FROM information_schema.columns 
-			WHERE table_name = 'accounts' 
-			AND column_name = 'user_id'
-		)
-	`).Scan(&colExists)
-	log.Printf("DEBUG: user_id column exists: %v", colExists) */
-	if err == nil {
-		log.Printf("DEBUG: Idempotency key already exists, returning existing transaction: %d", existingTxnID)
-		// Idempotency key already exists - return existing transaction
-		var balance int64
-		_ = tx.QueryRow(ctx, `SELECT balance FROM accounts WHERE user_id = $1`, userID).Scan(&balance)
-		return existingTxnID, balance, nil
-	} else if !errors.Is(err, pgx.ErrNoRows) {
-		log.Printf("ERROR: Failed to check idempotency: %v", err)
-		return 0, 0, fmt.Errorf("failed to check idempotency: %w", err)
-	}
-	log.Printf("DEBUG: Idempotency key is new, proceeding...")
-
-	// 2. Get user account ID
-	log.Printf("DEBUG: Getting user account for user_id=%d", userID)
-	var userAccountID int64
-	err = tx.QueryRow(ctx, `SELECT id FROM accounts WHERE user_id = $1`, userID).Scan(&userAccountID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			log.Printf("ERROR: Account not found for user_id=%d", userID)
-			return 0, 0, ErrAccountNotFound
-		}
-		log.Printf("ERROR: Failed to get user account: %v", err)
-		return 0, 0, fmt.Errorf("failed to get user account: %w", err)
-	}
-	log.Printf("DEBUG: Found user account_id=%d", userAccountID)
-
-	// 3. Get reserve account ID
-	log.Printf("DEBUG: Getting reserve account")
-	var reserveAccountID int64
-	err = tx.QueryRow(ctx, `SELECT id FROM accounts WHERE external_id = 'sys_reserve'`).Scan(&reserveAccountID)
-	if err != nil {
-		log.Printf("ERROR: Failed to get reserve account: %v", err)
-		return 0, 0, fmt.Errorf("failed to get reserve account: %w", err)
-	}
-	log.Printf("DEBUG: Found reserve account_id=%d", reserveAccountID)
-
-	// 4. Create transaction record
-	log.Printf("DEBUG: Creating transaction record")
-	var txnID int64
-	err = tx.QueryRow(ctx,
-		`INSERT INTO transactions (idempotency_key, kind, status, reference) 
-		 VALUES ($1, 'deposit', 'posted', $2) 
-		 RETURNING id`,
-		idempotencyKey, reference,
-	).Scan(&txnID)
-	if err != nil {
-		log.Printf("ERROR: Failed to create transaction: %v", err)
-		return 0, 0, fmt.Errorf("failed to create transaction: %w", err)
-	}
-	log.Printf("DEBUG: Created transaction_id=%d", txnID)
-
-	// 5. Create postings (double-entry)
-	// Note: The database trigger will automatically update account balances
-
-	log.Printf("DEBUG: Creating reserve posting (debit)")
-	// Debit reserve account (negative amount)
-	_, err = tx.Exec(ctx,
-		`INSERT INTO postings (transaction_id, account_id, amount, currency) 
-		 VALUES ($1, $2, $3, 'NGN')`,
-		txnID, reserveAccountID, -amount,
+	var acc models.Account
+	err := r.db.QueryRow(ctx, query, accountID).Scan(
+		&acc.ID,
+		&acc.ExternalID,
+		&acc.Name,
+		&acc.Type,
+		&acc.Balance,
+		&acc.Currency,
+		&acc.UserID,
+		&acc.CreatedAt,
 	)
-	if err != nil {
-		log.Printf("ERROR: Failed to create reserve posting: %v", err)
-		return 0, 0, fmt.Errorf("failed to create reserve posting: %w", err)
-	}
-
-	log.Printf("DEBUG: Creating user posting (credit)")
-	// Credit user account (positive amount)
-	_, err = tx.Exec(ctx,
-		`INSERT INTO postings (transaction_id, account_id, amount, currency) 
-		 VALUES ($1, $2, $3, 'NGN')`,
-		txnID, userAccountID, amount,
-	)
-	if err != nil {
-		log.Printf("ERROR: Failed to create user posting: %v", err)
-		return 0, 0, fmt.Errorf("failed to create user posting: %w", err)
-	}
-
-	// 6. Get the updated balance (trigger already updated it)
-	log.Printf("DEBUG: Getting updated balance")
-	var newBalance int64
-	err = tx.QueryRow(ctx,
-		`SELECT balance FROM accounts WHERE id = $1`,
-		userAccountID,
-	).Scan(&newBalance)
-	if err != nil {
-		log.Printf("ERROR: Failed to get updated balance: %v", err)
-		return 0, 0, fmt.Errorf("failed to get updated balance: %w", err)
-	}
-	log.Printf("DEBUG: New balance=%d", newBalance)
-
-	// Commit transaction
-	log.Printf("DEBUG: Committing transaction")
-	if err := tx.Commit(ctx); err != nil {
-		log.Printf("ERROR: Failed to commit transaction: %v", err)
-		return 0, 0, fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	log.Printf("DEBUG: Deposit successful - txnID=%d, newBalance=%d", txnID, newBalance)
-	return txnID, newBalance, nil
-}
-
-// Withdraw removes money from a user's account to the reserve
-func (r *WalletRepository) Withdraw(ctx context.Context, userID int, amount int64, idempotencyKey, reference string) (int64, int64, error) {
-	// Start a transaction
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	// 1. Check idempotency
-	var existingTxnID int64
-	err = tx.QueryRow(ctx, `SELECT id FROM transactions WHERE idempotency_key = $1`, idempotencyKey).Scan(&existingTxnID)
-	if err == nil {
-		// Idempotency key already exists - return existing transaction
-		var balance int64
-		_ = tx.QueryRow(ctx, `SELECT balance FROM accounts WHERE user_id = $1`, userID).Scan(&balance)
-		return existingTxnID, balance, nil
-	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return 0, 0, fmt.Errorf("failed to check idempotency: %w", err)
-	}
-
-	// 2. Get user account ID and current balance
-	var userAccountID, currentBalance int64
-	err = tx.QueryRow(ctx, `SELECT id, balance FROM accounts WHERE user_id = $1`, userID).Scan(&userAccountID, &currentBalance)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, 0, ErrAccountNotFound
-		}
-		return 0, 0, fmt.Errorf("failed to get user account: %w", err)
-	}
-
-	// 3. Check sufficient balance
-	if currentBalance < amount {
-		return 0, currentBalance, ErrInsufficientBalance
-	}
-
-	// 4. Get reserve account ID
-	var reserveAccountID int64
-	err = tx.QueryRow(ctx, `SELECT id FROM accounts WHERE external_id = 'sys_reserve'`).Scan(&reserveAccountID)
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to get reserve account: %w", err)
-	}
-
-	// 5. Create transaction record
-	var txnID int64
-	err = tx.QueryRow(ctx,
-		`INSERT INTO transactions (idempotency_key, kind, status, reference) 
-		 VALUES ($1, 'withdrawal', 'posted', $2) 
-		 RETURNING id`,
-		idempotencyKey, reference,
-	).Scan(&txnID)
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to create transaction: %w", err)
-	}
-
-	// 6. Create postings (double-entry)
-	// Note: The database trigger will automatically update account balances
-
-	// Debit user account (negative amount)
-	_, err = tx.Exec(ctx,
-		`INSERT INTO postings (transaction_id, account_id, amount, currency) 
-		 VALUES ($1, $2, $3, 'NGN')`,
-		txnID, userAccountID, -amount,
-	)
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to create user posting: %w", err)
-	}
-
-	// Credit reserve account (positive amount)
-	_, err = tx.Exec(ctx,
-		`INSERT INTO postings (transaction_id, account_id, amount, currency) 
-		 VALUES ($1, $2, $3, 'NGN')`,
-		txnID, reserveAccountID, amount,
-	)
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to create reserve posting: %w", err)
-	}
-
-	// 7. Get the updated balance (trigger already updated it)
-	var newBalance int64
-	err = tx.QueryRow(ctx,
-		`SELECT balance FROM accounts WHERE id = $1`,
-		userAccountID,
-	).Scan(&newBalance)
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to get updated balance: %w", err)
-	}
-
-	// Commit transaction
-	if err := tx.Commit(ctx); err != nil {
-		return 0, 0, fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	return txnID, newBalance, nil
-}
-
-// GetTransactionHistory retrieves all transactions for a user
-/* func (r *WalletRepository) GetTransactionHistory(ctx context.Context, userID int) ([]models.TransactionHistoryItem, error) {
-	// First, get the user's account ID
-	var accountID int64
-	err := r.db.QueryRow(ctx, `SELECT id FROM accounts WHERE user_id = $1`, userID).Scan(&accountID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrAccountNotFound
@@ -311,48 +70,297 @@ func (r *WalletRepository) Withdraw(ctx context.Context, userID int, amount int6
 		return nil, fmt.Errorf("failed to get account: %w", err)
 	}
 
-	// Get all transactions for this user, ordered by most recent first
+	return &acc, nil
+}
+
+// GetAccountByUserID retrieves a user's wallet account
+func (r *WalletRepository) GetAccountByUserID(ctx context.Context, userID int) (*models.Account, error) {
+	query := `
+		SELECT id, external_id, name, type, balance, currency, user_id, created_at
+		FROM accounts
+		WHERE user_id = $1
+	`
+
+	var acc models.Account
+	err := r.db.QueryRow(ctx, query, userID).Scan(
+		&acc.ID,
+		&acc.ExternalID,
+		&acc.Name,
+		&acc.Type,
+		&acc.Balance,
+		&acc.Currency,
+		&acc.UserID,
+		&acc.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrAccountNotFound
+		}
+		return nil, fmt.Errorf("failed to get account: %w", err)
+	}
+
+	return &acc, nil
+}
+
+// GetSystemAccount retrieves a system account by external_id
+func (r *WalletRepository) GetSystemAccount(ctx context.Context, externalID string) (*models.Account, error) {
+	query := `
+		SELECT id, external_id, name, type, balance, currency, user_id, created_at
+		FROM accounts
+		WHERE external_id = $1 AND type = 'system'
+	`
+
+	var acc models.Account
+	err := r.db.QueryRow(ctx, query, externalID).Scan(
+		&acc.ID,
+		&acc.ExternalID,
+		&acc.Name,
+		&acc.Type,
+		&acc.Balance,
+		&acc.Currency,
+		&acc.UserID,
+		&acc.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrAccountNotFound
+		}
+		return nil, fmt.Errorf("failed to get system account: %w", err)
+	}
+
+	return &acc, nil
+}
+
+// ==============================================
+// TRANSACTION QUERIES
+// ==============================================
+
+// GetTransactionByID retrieves a transaction by ID
+func (r *WalletRepository) GetTransactionByID(ctx context.Context, txnID int64) (*models.Transaction, error) {
+	query := `
+		SELECT id, idempotency_key, kind, status, reference, metadata, created_at
+		FROM transactions
+		WHERE id = $1
+	`
+
+	var txn models.Transaction
+	err := r.db.QueryRow(ctx, query, txnID).Scan(
+		&txn.ID,
+		&txn.IdempotencyKey,
+		&txn.Kind,
+		&txn.Status,
+		&txn.Reference,
+		&txn.Metadata,
+		&txn.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNoRows
+		}
+		return nil, fmt.Errorf("failed to get transaction: %w", err)
+	}
+
+	return &txn, nil
+}
+
+// GetTransactionByIdempotencyKey checks if idempotency key exists
+func (r *WalletRepository) GetTransactionByIdempotencyKey(ctx context.Context, key string) (*models.Transaction, error) {
+	query := `
+		SELECT id, idempotency_key, kind, status, reference, metadata, created_at
+		FROM transactions
+		WHERE idempotency_key = $1
+	`
+
+	var txn models.Transaction
+	err := r.db.QueryRow(ctx, query, key).Scan(
+		&txn.ID,
+		&txn.IdempotencyKey,
+		&txn.Kind,
+		&txn.Status,
+		&txn.Reference,
+		&txn.Metadata,
+		&txn.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNoRows // Not an error - key doesn't exist
+		}
+		return nil, fmt.Errorf("failed to check idempotency: %w", err)
+	}
+
+	return &txn, nil
+}
+
+// CreateTransaction creates a new transaction record within a transaction
+func (r *WalletRepository) CreateTransaction(ctx context.Context, tx pgx.Tx, txn *models.Transaction) error {
+	query := `
+		INSERT INTO transactions (idempotency_key, kind, status, reference, metadata)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, created_at
+	`
+
+	err := tx.QueryRow(ctx, query,
+		txn.IdempotencyKey,
+		txn.Kind,
+		txn.Status,
+		txn.Reference,
+		txn.Metadata,
+	).Scan(&txn.ID, &txn.CreatedAt)
+
+	if err != nil {
+		return fmt.Errorf("failed to create transaction: %w", err)
+	}
+
+	return nil
+}
+
+// ==============================================
+// POSTING QUERIES
+// ==============================================
+
+// CreatePosting creates a new posting (debit or credit) within a transaction
+func (r *WalletRepository) CreatePosting(ctx context.Context, tx pgx.Tx, posting *models.Posting) error {
+	query := `
+		INSERT INTO postings (transaction_id, account_id, amount, currency)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, created_at
+	`
+
+	err := tx.QueryRow(ctx, query,
+		posting.TransactionID,
+		posting.AccountID,
+		posting.Amount,
+		posting.Currency,
+	).Scan(&posting.ID, &posting.CreatedAt)
+
+	if err != nil {
+		return fmt.Errorf("failed to create posting: %w", err)
+	}
+
+	return nil
+}
+
+// GetPostingsByTransactionID retrieves all postings for a transaction
+func (r *WalletRepository) GetPostingsByTransactionID(ctx context.Context, txnID int64) ([]models.Posting, error) {
+	query := `
+		SELECT id, transaction_id, account_id, amount, currency, created_at
+		FROM postings
+		WHERE transaction_id = $1
+		ORDER BY id
+	`
+
+	rows, err := r.db.Query(ctx, query, txnID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query postings: %w", err)
+	}
+	defer rows.Close()
+
+	var postings []models.Posting
+	for rows.Next() {
+		var p models.Posting
+		err := rows.Scan(&p.ID, &p.TransactionID, &p.AccountID, &p.Amount, &p.Currency, &p.CreatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan posting: %w", err)
+		}
+		postings = append(postings, p)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating postings: %w", err)
+	}
+
+	return postings, nil
+}
+
+// ==============================================
+// TRANSACTION HISTORY
+// ==============================================
+
+// GetTransactionHistory retrieves transaction history for a user with pagination
+func (r *WalletRepository) GetTransactionHistory(ctx context.Context, userID int, limit, offset int) ([]models.TransactionHistoryItem, error) {
+	// First, get the user's account ID
+	account, err := r.GetAccountByUserID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
 	query := `
 		SELECT 
 			t.id,
 			t.kind,
 			t.status,
 			t.reference,
-			t.created_at,
-			COALESCE(SUM(p.amount), 0) as amount
-		FROM transactions t
-		INNER JOIN postings p ON t.id = p.transaction_id
+			p.amount,
+			CASE 
+				WHEN p.amount > 0 THEN 'credit'
+				ELSE 'debit'
+			END as direction,
+			other_acc.name as counterparty,
+			t.created_at
+		FROM postings p
+		JOIN transactions t ON t.id = p.transaction_id
+		LEFT JOIN postings other_p ON other_p.transaction_id = t.id 
+			AND other_p.account_id != p.account_id
+			AND SIGN(other_p.amount) != SIGN(p.amount)
+		LEFT JOIN accounts other_acc ON other_acc.id = other_p.account_id
 		WHERE p.account_id = $1
-		GROUP BY t.id, t.kind, t.status, t.reference, t.created_at
+			AND t.status = 'posted'
 		ORDER BY t.created_at DESC, t.id DESC
+		LIMIT $2 OFFSET $3
 	`
 
-	rows, err := r.db.Query(ctx, query, accountID)
+	rows, err := r.db.Query(ctx, query, account.ID, limit, offset)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query transactions: %w", err)
+		return nil, fmt.Errorf("failed to query transaction history: %w", err)
 	}
 	defer rows.Close()
 
-	var transactions []models.TransactionHistoryItem
+	var history []models.TransactionHistoryItem
 	for rows.Next() {
-		var txn models.TransactionHistoryItem
+		var item models.TransactionHistoryItem
 		err := rows.Scan(
-			&txn.ID,
-			&txn.Type,
-			&txn.Status,
-			&txn.Reference,
-			&txn.CreatedAt,
-			&txn.Amount,
+			&item.ID,
+			&item.Type,
+			&item.Status,
+			&item.Reference,
+			&item.Amount,
+			&item.Direction,
+			&item.Counterparty,
+			&item.CreatedAt,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan transaction: %w", err)
+			return nil, fmt.Errorf("failed to scan transaction history: %w", err)
 		}
-		transactions = append(transactions, txn)
+		history = append(history, item)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating transactions: %w", err)
+		return nil, fmt.Errorf("error iterating transaction history: %w", err)
 	}
 
-	return transactions, nil
-} */
+	return history, nil
+}
+
+// CountTransactionHistory returns total number of transactions for a user
+func (r *WalletRepository) CountTransactionHistory(ctx context.Context, userID int) (int, error) {
+	account, err := r.GetAccountByUserID(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+
+	query := `
+		SELECT COUNT(DISTINCT t.id)
+		FROM postings p
+		JOIN transactions t ON t.id = p.transaction_id
+		WHERE p.account_id = $1
+			AND t.status = 'posted'
+	`
+
+	var count int
+	err = r.db.QueryRow(ctx, query, account.ID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count transactions: %w", err)
+	}
+
+	return count, nil
+}

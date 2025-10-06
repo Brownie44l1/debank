@@ -14,7 +14,7 @@ import (
 	"github.com/Brownie44l1/debank/internal/db"
 	"github.com/Brownie44l1/debank/internal/handlers"
 	"github.com/Brownie44l1/debank/internal/repository"
-	"github.com/Brownie44l1/debank/internal/services"
+	"github.com/Brownie44l1/debank/internal/service"
 )
 
 func main() {
@@ -32,7 +32,7 @@ func main() {
 
 	// 3. Initialize layers
 	walletRepo := repository.NewWalletRepository(pool)
-	walletService := services.NewWalletService(walletRepo)
+	walletService := service.NewWalletService(walletRepo)
 	walletHandler := handlers.NewWalletHandler(walletService)
 
 	// 4. Setup Gin router
