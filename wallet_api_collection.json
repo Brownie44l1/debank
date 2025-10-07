@@ -1,0 +1,540 @@
+{
+  "info": {
+    "name": "Wallet API",
+    "description": "Complete wallet API with deposit, withdraw, transfer, balance, and history endpoints",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "user_id_1",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "user_id_2",
+      "value": "2",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Deposit",
+      "item": [
+        {
+          "name": "Deposit Success",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": 1,\n  \"amount\": 100000,\n  \"idempotency_key\": \"{{$guid}}\",\n  \"reference\": \"salary_payment\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/deposit",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "deposit"]
+            },
+            "description": "Deposit ₦1000 (100000 kobo) into user account"
+          },
+          "response": []
+        },
+        {
+          "name": "Deposit Minimum Amount",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": 1,\n  \"amount\": 10000,\n  \"idempotency_key\": \"{{$guid}}\",\n  \"reference\": \"min_deposit\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/deposit",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "deposit"]
+            },
+            "description": "Deposit minimum amount ₦100 (10000 kobo)"
+          },
+          "response": []
+        },
+        {
+          "name": "Deposit - Idempotent Request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": 1,\n  \"amount\": 50000,\n  \"idempotency_key\": \"test_idempotency_key_123\",\n  \"reference\": \"duplicate_test\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/deposit",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "deposit"]
+            },
+            "description": "Send this twice with same idempotency_key to test idempotency"
+          },
+          "response": []
+        },
+        {
+          "name": "Deposit - Amount Too Small",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": 1,\n  \"amount\": 5000,\n  \"idempotency_key\": \"{{$guid}}\",\n  \"reference\": \"small_amount\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/deposit",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "deposit"]
+            },
+            "description": "Should fail - amount below ₦100 minimum"
+          },
+          "response": []
+        },
+        {
+          "name": "Deposit - Missing Idempotency Key",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": 1,\n  \"amount\": 100000,\n  \"reference\": \"no_idempotency\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/deposit",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "deposit"]
+            },
+            "description": "Should fail - idempotency_key is required"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Withdraw",
+      "item": [
+        {
+          "name": "Withdraw Success",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": 1,\n  \"amount\": 50000,\n  \"idempotency_key\": \"{{$guid}}\",\n  \"reference\": \"atm_withdrawal\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/withdraw",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "withdraw"]
+            },
+            "description": "Withdraw ₦500 (50000 kobo) from user account"
+          },
+          "response": []
+        },
+        {
+          "name": "Withdraw - Insufficient Balance",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": 1,\n  \"amount\": 99999999,\n  \"idempotency_key\": \"{{$guid}}\",\n  \"reference\": \"large_withdrawal\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/withdraw",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "withdraw"]
+            },
+            "description": "Should fail - insufficient balance"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Transfer",
+      "item": [
+        {
+          "name": "Transfer Success",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"from_user_id\": 1,\n  \"to_user_id\": 2,\n  \"amount\": 25000,\n  \"fee\": 5000,\n  \"idempotency_key\": \"{{$guid}}\",\n  \"reference\": \"payment_for_services\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "transfer"]
+            },
+            "description": "Transfer ₦250 + ₦50 fee from user 1 to user 2"
+          },
+          "response": []
+        },
+        {
+          "name": "Transfer Without Fee",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"from_user_id\": 1,\n  \"to_user_id\": 2,\n  \"amount\": 10000,\n  \"fee\": 0,\n  \"idempotency_key\": \"{{$guid}}\",\n  \"reference\": \"no_fee_transfer\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "transfer"]
+            },
+            "description": "Transfer ₦100 with no fee"
+          },
+          "response": []
+        },
+        {
+          "name": "Transfer - Same Account",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"from_user_id\": 1,\n  \"to_user_id\": 1,\n  \"amount\": 10000,\n  \"fee\": 0,\n  \"idempotency_key\": \"{{$guid}}\",\n  \"reference\": \"self_transfer\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "transfer"]
+            },
+            "description": "Should fail - cannot transfer to same account"
+          },
+          "response": []
+        },
+        {
+          "name": "Transfer - Insufficient Balance",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"from_user_id\": 1,\n  \"to_user_id\": 2,\n  \"amount\": 95000,\n  \"fee\": 10000,\n  \"idempotency_key\": \"{{$guid}}\",\n  \"reference\": \"large_transfer\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "transfer"]
+            },
+            "description": "Should fail if total (amount + fee) exceeds balance"
+          },
+          "response": []
+        },
+        {
+          "name": "Transfer - Test Concurrency",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"from_user_id\": 1,\n  \"to_user_id\": 2,\n  \"amount\": 10000,\n  \"fee\": 0,\n  \"idempotency_key\": \"{{$guid}}\",\n  \"reference\": \"concurrent_test_{{$timestamp}}\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "transfer"]
+            },
+            "description": "Use Postman Runner to send multiple concurrent requests"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Balance",
+      "item": [
+        {
+          "name": "Get Balance - User 1",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/balance/{{user_id_1}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "balance", "{{user_id_1}}"]
+            },
+            "description": "Get current balance for user 1"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Balance - User 2",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/balance/{{user_id_2}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "balance", "{{user_id_2}}"]
+            },
+            "description": "Get current balance for user 2"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Balance - Non-existent User",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/balance/99999",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "balance", "99999"]
+            },
+            "description": "Should return 404 - account not found"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Transaction History",
+      "item": [
+        {
+          "name": "Get Transaction History - Default",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/transactions/{{user_id_1}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "transactions", "{{user_id_1}}"]
+            },
+            "description": "Get transaction history with default pagination (page 1, 20 per page)"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Transaction History - Paginated",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/transactions/{{user_id_1}}?page=1&per_page=10",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "transactions", "{{user_id_1}}"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "per_page",
+                  "value": "10"
+                }
+              ]
+            },
+            "description": "Get first page with 10 transactions per page"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Transaction History - Page 2",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/transactions/{{user_id_1}}?page=2&per_page=10",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "transactions", "{{user_id_1}}"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "2"
+                },
+                {
+                  "key": "per_page",
+                  "value": "10"
+                }
+              ]
+            },
+            "description": "Get second page of transaction history"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Test Scenarios",
+      "item": [
+        {
+          "name": "Complete Flow - Deposit, Transfer, Withdraw",
+          "item": [
+            {
+              "name": "1. Check Initial Balance",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/balance/1",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "v1", "balance", "1"]
+                }
+              }
+            },
+            {
+              "name": "2. Deposit ₦1000",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"user_id\": 1,\n  \"amount\": 100000,\n  \"idempotency_key\": \"flow_deposit_{{$timestamp}}\",\n  \"reference\": \"test_flow_deposit\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/deposit",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "v1", "deposit"]
+                }
+              }
+            },
+            {
+              "name": "3. Transfer ₦300 to User 2",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"from_user_id\": 1,\n  \"to_user_id\": 2,\n  \"amount\": 30000,\n  \"fee\": 5000,\n  \"idempotency_key\": \"flow_transfer_{{$timestamp}}\",\n  \"reference\": \"test_flow_transfer\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/transfer",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "v1", "transfer"]
+                }
+              }
+            },
+            {
+              "name": "4. Withdraw ₦200",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"user_id\": 1,\n  \"amount\": 20000,\n  \"idempotency_key\": \"flow_withdraw_{{$timestamp}}\",\n  \"reference\": \"test_flow_withdraw\"\n}"
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/withdraw",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "v1", "withdraw"]
+                }
+              }
+            },
+            {
+              "name": "5. Check Final Balance",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/balance/1",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "v1", "balance", "1"]
+                }
+              }
+            },
+            {
+              "name": "6. Check Transaction History",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/transactions/1",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "v1", "transactions", "1"]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
