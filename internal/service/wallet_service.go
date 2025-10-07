@@ -18,7 +18,9 @@ import (
 type WalletRepositoryInterface interface {
 	BeginTx(ctx context.Context) (pgx.Tx, error)
 	GetAccountByUserID(ctx context.Context, userID int) (*models.Account, error)
+	GetAccountByUserIDForUpdate(ctx context.Context, tx pgx.Tx, userID int) (*models.Account, error)
 	GetSystemAccount(ctx context.Context, externalID string) (*models.Account, error)
+	GetSystemAccountForUpdate(ctx context.Context, tx pgx.Tx, externalID string) (*models.Account, error)
 	GetTransactionByIdempotencyKey(ctx context.Context, key string) (*models.Transaction, error)
 	CreateTransaction(ctx context.Context, tx pgx.Tx, txn *models.Transaction) error
 	CreatePosting(ctx context.Context, tx pgx.Tx, posting *models.Posting) error
@@ -93,7 +95,7 @@ func (s *WalletService) Deposit(ctx context.Context, req models.DepositRequest) 
 		return s.buildIdempotentResponse(ctx, existingTxn.ID, req.UserID, req.Reference)
 	}
 
-	// 3. Execute deposit transaction
+	// 3. Execute deposit transaction with locking
 	txnID, newBalance, err := s.executeDeposit(ctx, req)
 	if err != nil {
 		log.Printf("[DEPOSIT] Failed - UserID: %d, Error: %v", req.UserID, err)
@@ -127,7 +129,8 @@ func (s *WalletService) executeDeposit(ctx context.Context, req models.DepositRe
 		_ = tx.Rollback(ctx)
 	}()
 
-	userAccount, err := s.repo.GetAccountByUserID(ctx, req.UserID)
+	// Lock user account (prevents concurrent deposits to same account)
+	userAccount, err := s.repo.GetAccountByUserIDForUpdate(ctx, tx, req.UserID)
 	if err != nil {
 		if isAccountNotFoundError(err) {
 			return 0, 0, ErrAccountNotFound
@@ -135,7 +138,8 @@ func (s *WalletService) executeDeposit(ctx context.Context, req models.DepositRe
 		return 0, 0, err
 	}
 
-	reserveAccount, err := s.repo.GetSystemAccount(ctx, "sys_reserve")
+	// Lock reserve account (prevents concurrent access to reserve)
+	reserveAccount, err := s.repo.GetSystemAccountForUpdate(ctx, tx, "sys_reserve")
 	if err != nil {
 		return 0, 0, fmt.Errorf("reserve account not found: %w", err)
 	}
@@ -172,12 +176,10 @@ func (s *WalletService) executeDeposit(ctx context.Context, req models.DepositRe
 		return 0, 0, fmt.Errorf("failed to commit: %w", err)
 	}
 
-	updatedAccount, err := s.repo.GetAccountByUserID(ctx, req.UserID)
-	if err != nil {
-		return 0, 0, err
-	}
+	// Calculate new balance after commit
+	newBalance := userAccount.Balance + req.Amount
 
-	return txn.ID, updatedAccount.Balance, nil
+	return txn.ID, newBalance, nil
 }
 
 // ==============================================
@@ -204,17 +206,6 @@ func (s *WalletService) Withdraw(ctx context.Context, req models.WithdrawRequest
 	if existingTxn != nil {
 		log.Printf("[WITHDRAW] Idempotent request - Returning existing transaction: %d", existingTxn.ID)
 		return s.buildIdempotentResponse(ctx, existingTxn.ID, req.UserID, req.Reference)
-	}
-
-	userAccount, err := s.repo.GetAccountByUserID(ctx, req.UserID)
-	if err != nil {
-		if isAccountNotFoundError(err) {
-			return nil, ErrAccountNotFound
-		}
-		return nil, err
-	}
-	if userAccount.Balance < req.Amount {
-		return nil, ErrInsufficientBalance
 	}
 
 	txnID, newBalance, err := s.executeWithdraw(ctx, req)
@@ -249,7 +240,8 @@ func (s *WalletService) executeWithdraw(ctx context.Context, req models.Withdraw
 		_ = tx.Rollback(ctx)
 	}()
 
-	userAccount, err := s.repo.GetAccountByUserID(ctx, req.UserID)
+	// Lock user account and check balance atomically
+	userAccount, err := s.repo.GetAccountByUserIDForUpdate(ctx, tx, req.UserID)
 	if err != nil {
 		if isAccountNotFoundError(err) {
 			return 0, 0, ErrAccountNotFound
@@ -257,7 +249,13 @@ func (s *WalletService) executeWithdraw(ctx context.Context, req models.Withdraw
 		return 0, 0, err
 	}
 
-	reserveAccount, err := s.repo.GetSystemAccount(ctx, "sys_reserve")
+	// Check sufficient balance while holding lock
+	if userAccount.Balance < req.Amount {
+		return 0, 0, ErrInsufficientBalance
+	}
+
+	// Lock reserve account
+	reserveAccount, err := s.repo.GetSystemAccountForUpdate(ctx, tx, "sys_reserve")
 	if err != nil {
 		return 0, 0, fmt.Errorf("reserve account not found: %w", err)
 	}
@@ -294,16 +292,13 @@ func (s *WalletService) executeWithdraw(ctx context.Context, req models.Withdraw
 		return 0, 0, fmt.Errorf("failed to commit: %w", err)
 	}
 
-	updatedAccount, err := s.repo.GetAccountByUserID(ctx, req.UserID)
-	if err != nil {
-		return 0, 0, err
-	}
+	newBalance := userAccount.Balance - req.Amount
 
-	return txn.ID, updatedAccount.Balance, nil
+	return txn.ID, newBalance, nil
 }
 
 // ==============================================
-// TRANSFER
+// TRANSFER (CRITICAL - Deadlock Prevention)
 // ==============================================
 
 func (s *WalletService) Transfer(ctx context.Context, req models.TransferRequest) (*models.TransferResponse, error) {
@@ -334,18 +329,6 @@ func (s *WalletService) Transfer(ctx context.Context, req models.TransferRequest
 		return s.buildIdempotentTransferResponse(ctx, existingTxn.ID, req.FromUserID, req.ToUserID)
 	}
 
-	senderAccount, err := s.repo.GetAccountByUserID(ctx, req.FromUserID)
-	if err != nil {
-		if isAccountNotFoundError(err) {
-			return nil, ErrAccountNotFound
-		}
-		return nil, err
-	}
-	totalDebit := req.Amount + req.Fee
-	if senderAccount.Balance < totalDebit {
-		return nil, ErrInsufficientBalance
-	}
-
 	txnID, senderBalance, recipientBalance, err := s.executeTransfer(ctx, req)
 	if err != nil {
 		log.Printf("[TRANSFER] Failed - Error: %v", err)
@@ -373,7 +356,19 @@ func (s *WalletService) executeTransfer(ctx context.Context, req models.Transfer
 		_ = tx.Rollback(ctx)
 	}()
 
-	senderAccount, err := s.repo.GetAccountByUserID(ctx, req.FromUserID)
+	// CRITICAL: Lock accounts in consistent order to prevent deadlocks
+	// Always lock the account with lower user_id first
+	firstUserID := req.FromUserID
+	secondUserID := req.ToUserID
+	if req.ToUserID < req.FromUserID {
+		firstUserID = req.ToUserID
+		secondUserID = req.FromUserID
+	}
+
+	log.Printf("[TRANSFER] Locking accounts in order: %d, %d", firstUserID, secondUserID)
+
+	// Lock first account
+	firstAccount, err := s.repo.GetAccountByUserIDForUpdate(ctx, tx, firstUserID)
 	if err != nil {
 		if isAccountNotFoundError(err) {
 			return 0, 0, 0, ErrAccountNotFound
@@ -381,12 +376,29 @@ func (s *WalletService) executeTransfer(ctx context.Context, req models.Transfer
 		return 0, 0, 0, err
 	}
 
-	recipientAccount, err := s.repo.GetAccountByUserID(ctx, req.ToUserID)
+	// Lock second account
+	secondAccount, err := s.repo.GetAccountByUserIDForUpdate(ctx, tx, secondUserID)
 	if err != nil {
 		if isAccountNotFoundError(err) {
 			return 0, 0, 0, ErrAccountNotFound
 		}
 		return 0, 0, 0, err
+	}
+
+	// Map back to sender/recipient
+	var senderAccount, recipientAccount *models.Account
+	if firstUserID == req.FromUserID {
+		senderAccount = firstAccount
+		recipientAccount = secondAccount
+	} else {
+		senderAccount = secondAccount
+		recipientAccount = firstAccount
+	}
+
+	// Check sufficient balance while holding locks
+	totalDebit := req.Amount + req.Fee
+	if senderAccount.Balance < totalDebit {
+		return 0, 0, 0, ErrInsufficientBalance
 	}
 
 	txn := &models.Transaction{
@@ -399,7 +411,7 @@ func (s *WalletService) executeTransfer(ctx context.Context, req models.Transfer
 		return 0, 0, 0, err
 	}
 
-	totalDebit := req.Amount + req.Fee
+	// Debit sender
 	if err := s.repo.CreatePosting(ctx, tx, &models.Posting{
 		TransactionID: txn.ID,
 		AccountID:     senderAccount.ID,
@@ -409,6 +421,7 @@ func (s *WalletService) executeTransfer(ctx context.Context, req models.Transfer
 		return 0, 0, 0, err
 	}
 
+	// Credit recipient
 	if err := s.repo.CreatePosting(ctx, tx, &models.Posting{
 		TransactionID: txn.ID,
 		AccountID:     recipientAccount.ID,
@@ -418,8 +431,9 @@ func (s *WalletService) executeTransfer(ctx context.Context, req models.Transfer
 		return 0, 0, 0, err
 	}
 
+	// Handle fee if present
 	if req.Fee > 0 {
-		feeAccount, err := s.repo.GetSystemAccount(ctx, "sys_fee")
+		feeAccount, err := s.repo.GetSystemAccountForUpdate(ctx, tx, "sys_fee")
 		if err != nil {
 			return 0, 0, 0, fmt.Errorf("fee account not found: %w", err)
 		}
@@ -438,16 +452,11 @@ func (s *WalletService) executeTransfer(ctx context.Context, req models.Transfer
 		return 0, 0, 0, fmt.Errorf("failed to commit: %w", err)
 	}
 
-	updatedSender, err := s.repo.GetAccountByUserID(ctx, req.FromUserID)
-	if err != nil {
-		return 0, 0, 0, err
-	}
-	updatedRecipient, err := s.repo.GetAccountByUserID(ctx, req.ToUserID)
-	if err != nil {
-		return 0, 0, 0, err
-	}
+	// Calculate final balances
+	senderBalance := senderAccount.Balance - totalDebit
+	recipientBalance := recipientAccount.Balance + req.Amount
 
-	return txn.ID, updatedSender.Balance, updatedRecipient.Balance, nil
+	return txn.ID, senderBalance, recipientBalance, nil
 }
 
 // ==============================================
@@ -589,7 +598,6 @@ func (s *WalletService) buildIdempotentTransferResponse(ctx context.Context, txn
 
 // Error helper functions
 func isNoRowsError(err error) bool {
-	// Check if error message contains "no rows"
 	return err != nil && (err.Error() == "no rows found" || errors.Is(err, errors.New("no rows found")))
 }
 

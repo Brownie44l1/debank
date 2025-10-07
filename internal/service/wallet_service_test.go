@@ -14,18 +14,20 @@ import (
 )
 
 // ==============================================
-// MOCK REPOSITORY
+// MOCK REPOSITORY (Updated with ForUpdate methods)
 // ==============================================
 
 type MockWalletRepository struct {
-	BeginTxFunc                     func(ctx context.Context) (pgx.Tx, error)
-	GetAccountByUserIDFunc          func(ctx context.Context, userID int) (*models.Account, error)
-	GetSystemAccountFunc            func(ctx context.Context, externalID string) (*models.Account, error)
+	BeginTxFunc                        func(ctx context.Context) (pgx.Tx, error)
+	GetAccountByUserIDFunc             func(ctx context.Context, userID int) (*models.Account, error)
+	GetAccountByUserIDForUpdateFunc    func(ctx context.Context, tx pgx.Tx, userID int) (*models.Account, error)
+	GetSystemAccountFunc               func(ctx context.Context, externalID string) (*models.Account, error)
+	GetSystemAccountForUpdateFunc      func(ctx context.Context, tx pgx.Tx, externalID string) (*models.Account, error)
 	GetTransactionByIdempotencyKeyFunc func(ctx context.Context, key string) (*models.Transaction, error)
-	CreateTransactionFunc           func(ctx context.Context, tx pgx.Tx, txn *models.Transaction) error
-	CreatePostingFunc               func(ctx context.Context, tx pgx.Tx, posting *models.Posting) error
-	GetTransactionHistoryFunc       func(ctx context.Context, userID int, limit, offset int) ([]models.TransactionHistoryItem, error)
-	CountTransactionHistoryFunc     func(ctx context.Context, userID int) (int, error)
+	CreateTransactionFunc              func(ctx context.Context, tx pgx.Tx, txn *models.Transaction) error
+	CreatePostingFunc                  func(ctx context.Context, tx pgx.Tx, posting *models.Posting) error
+	GetTransactionHistoryFunc          func(ctx context.Context, userID int, limit, offset int) ([]models.TransactionHistoryItem, error)
+	CountTransactionHistoryFunc        func(ctx context.Context, userID int) (int, error)
 }
 
 func (m *MockWalletRepository) BeginTx(ctx context.Context) (pgx.Tx, error) {
@@ -42,9 +44,23 @@ func (m *MockWalletRepository) GetAccountByUserID(ctx context.Context, userID in
 	return nil, errors.New("not implemented")
 }
 
+func (m *MockWalletRepository) GetAccountByUserIDForUpdate(ctx context.Context, tx pgx.Tx, userID int) (*models.Account, error) {
+	if m.GetAccountByUserIDForUpdateFunc != nil {
+		return m.GetAccountByUserIDForUpdateFunc(ctx, tx, userID)
+	}
+	return nil, errors.New("not implemented")
+}
+
 func (m *MockWalletRepository) GetSystemAccount(ctx context.Context, externalID string) (*models.Account, error) {
 	if m.GetSystemAccountFunc != nil {
 		return m.GetSystemAccountFunc(ctx, externalID)
+	}
+	return nil, errors.New("not implemented")
+}
+
+func (m *MockWalletRepository) GetSystemAccountForUpdate(ctx context.Context, tx pgx.Tx, externalID string) (*models.Account, error) {
+	if m.GetSystemAccountForUpdateFunc != nil {
+		return m.GetSystemAccountForUpdateFunc(ctx, tx, externalID)
 	}
 	return nil, errors.New("not implemented")
 }
@@ -61,6 +77,7 @@ func (m *MockWalletRepository) CreateTransaction(ctx context.Context, tx pgx.Tx,
 		return m.CreateTransactionFunc(ctx, tx, txn)
 	}
 	txn.ID = 12345 // Simulate auto-increment
+	txn.CreatedAt = time.Now()
 	return nil
 }
 
@@ -68,6 +85,8 @@ func (m *MockWalletRepository) CreatePosting(ctx context.Context, tx pgx.Tx, pos
 	if m.CreatePostingFunc != nil {
 		return m.CreatePostingFunc(ctx, tx, posting)
 	}
+	posting.ID = 1
+	posting.CreatedAt = time.Now()
 	return nil
 }
 
@@ -85,7 +104,10 @@ func (m *MockWalletRepository) CountTransactionHistory(ctx context.Context, user
 	return 0, errors.New("not implemented")
 }
 
-// Mock transaction
+// ==============================================
+// MOCK TRANSACTION
+// ==============================================
+
 type MockTx struct {
 	CommitFunc   func(ctx context.Context) error
 	RollbackFunc func(ctx context.Context) error
@@ -136,31 +158,27 @@ func TestDeposit_Success(t *testing.T) {
 	service := NewWalletService(repo)
 
 	userID := 1
-	initialBalance := int64(50000) // ₦500
-	depositAmount := int64(100000) // ₦1000
+	initialBalance := int64(50000)   // ₦500
+	depositAmount := int64(100000)   // ₦1000
 	finalBalance := initialBalance + depositAmount
 
-	// Mock implementations
+	// Mock idempotency check - no duplicate
 	repo.GetTransactionByIdempotencyKeyFunc = func(ctx context.Context, key string) (*models.Transaction, error) {
-		return nil, errors.New("no rows found") // Not a duplicate
+		return nil, errors.New("no rows found")
 	}
 
-	callCount := 0
-	repo.GetAccountByUserIDFunc = func(ctx context.Context, uid int) (*models.Account, error) {
-		callCount++
-		balance := initialBalance
-		if callCount > 1 { // After transaction
-			balance = finalBalance
-		}
+	// Mock locked account fetch
+	repo.GetAccountByUserIDForUpdateFunc = func(ctx context.Context, tx pgx.Tx, uid int) (*models.Account, error) {
 		return &models.Account{
 			ID:       100,
 			UserID:   &uid,
-			Balance:  balance,
+			Balance:  initialBalance,
 			Currency: "NGN",
 		}, nil
 	}
 
-	repo.GetSystemAccountFunc = func(ctx context.Context, externalID string) (*models.Account, error) {
+	// Mock system account fetch
+	repo.GetSystemAccountForUpdateFunc = func(ctx context.Context, tx pgx.Tx, externalID string) (*models.Account, error) {
 		return &models.Account{
 			ID:       999,
 			Type:     "system",
@@ -226,7 +244,7 @@ func TestDeposit_ValidationErrors(t *testing.T) {
 			name: "amount below minimum",
 			req: models.DepositRequest{
 				UserID:         1,
-				Amount:         5000, // ₦50, below ₦100 minimum
+				Amount:         5000,
 				IdempotencyKey: "dep_low",
 			},
 			wantErr: ErrAmountTooSmall,
@@ -235,7 +253,7 @@ func TestDeposit_ValidationErrors(t *testing.T) {
 			name: "amount exceeds maximum",
 			req: models.DepositRequest{
 				UserID:         1,
-				Amount:         200000000, // ₦2M, above ₦1M max
+				Amount:         200000000,
 				IdempotencyKey: "dep_high",
 			},
 			wantErr: ErrAmountTooLarge,
@@ -300,7 +318,7 @@ func TestDeposit_AccountNotFound(t *testing.T) {
 		return nil, errors.New("no rows found")
 	}
 
-	repo.GetAccountByUserIDFunc = func(ctx context.Context, userID int) (*models.Account, error) {
+	repo.GetAccountByUserIDForUpdateFunc = func(ctx context.Context, tx pgx.Tx, userID int) (*models.Account, error) {
 		return nil, errors.New("account not found")
 	}
 
@@ -324,30 +342,24 @@ func TestWithdraw_Success(t *testing.T) {
 	service := NewWalletService(repo)
 
 	userID := 1
-	initialBalance := int64(500000)  // ₦5000
-	withdrawAmount := int64(100000)  // ₦1000
+	initialBalance := int64(500000)   // ₦5000
+	withdrawAmount := int64(100000)   // ₦1000
 	finalBalance := initialBalance - withdrawAmount
 
 	repo.GetTransactionByIdempotencyKeyFunc = func(ctx context.Context, key string) (*models.Transaction, error) {
 		return nil, errors.New("no rows found")
 	}
 
-	callCount := 0
-	repo.GetAccountByUserIDFunc = func(ctx context.Context, uid int) (*models.Account, error) {
-		callCount++
-		balance := initialBalance
-		if callCount > 2 { // After balance check and transaction
-			balance = finalBalance
-		}
+	repo.GetAccountByUserIDForUpdateFunc = func(ctx context.Context, tx pgx.Tx, uid int) (*models.Account, error) {
 		return &models.Account{
 			ID:       100,
 			UserID:   &uid,
-			Balance:  balance,
+			Balance:  initialBalance,
 			Currency: "NGN",
 		}, nil
 	}
 
-	repo.GetSystemAccountFunc = func(ctx context.Context, externalID string) (*models.Account, error) {
+	repo.GetSystemAccountForUpdateFunc = func(ctx context.Context, tx pgx.Tx, externalID string) (*models.Account, error) {
 		return &models.Account{
 			ID:       999,
 			Type:     "system",
@@ -381,7 +393,7 @@ func TestWithdraw_InsufficientBalance(t *testing.T) {
 		return nil, errors.New("no rows found")
 	}
 
-	repo.GetAccountByUserIDFunc = func(ctx context.Context, userID int) (*models.Account, error) {
+	repo.GetAccountByUserIDForUpdateFunc = func(ctx context.Context, tx pgx.Tx, userID int) (*models.Account, error) {
 		return &models.Account{
 			ID:       100,
 			UserID:   &userID,
@@ -411,49 +423,39 @@ func TestTransfer_Success(t *testing.T) {
 
 	senderID := 1
 	recipientID := 2
-	senderInitialBalance := int64(500000) // ₦5000
-	recipientInitialBalance := int64(100000) // ₦1000
-	transferAmount := int64(100000) // ₦1000
-	fee := int64(5000) // ₦50
+	senderInitialBalance := int64(500000)      // ₦5000
+	recipientInitialBalance := int64(100000)   // ₦1000
+	transferAmount := int64(100000)            // ₦1000
+	fee := int64(5000)                         // ₦50
 
 	repo.GetTransactionByIdempotencyKeyFunc = func(ctx context.Context, key string) (*models.Transaction, error) {
 		return nil, errors.New("no rows found")
 	}
 
-	accountCallCount := 0
-	repo.GetAccountByUserIDFunc = func(ctx context.Context, uid int) (*models.Account, error) {
-		accountCallCount++
-		
+	// Mock will be called twice for locks (ordered by ID)
+	callCount := 0
+	repo.GetAccountByUserIDForUpdateFunc = func(ctx context.Context, tx pgx.Tx, uid int) (*models.Account, error) {
+		callCount++
 		if uid == senderID {
-			balance := senderInitialBalance
-			if accountCallCount > 3 { // After transaction
-				balance = senderInitialBalance - transferAmount - fee
-			}
 			return &models.Account{
 				ID:       100,
 				UserID:   &uid,
-				Balance:  balance,
+				Balance:  senderInitialBalance,
 				Currency: "NGN",
 			}, nil
 		}
-		
 		if uid == recipientID {
-			balance := recipientInitialBalance
-			if accountCallCount > 3 { // After transaction
-				balance = recipientInitialBalance + transferAmount
-			}
 			return &models.Account{
 				ID:       200,
 				UserID:   &uid,
-				Balance:  balance,
+				Balance:  recipientInitialBalance,
 				Currency: "NGN",
 			}, nil
 		}
-		
 		return nil, errors.New("account not found")
 	}
 
-	repo.GetSystemAccountFunc = func(ctx context.Context, externalID string) (*models.Account, error) {
+	repo.GetSystemAccountForUpdateFunc = func(ctx context.Context, tx pgx.Tx, externalID string) (*models.Account, error) {
 		return &models.Account{
 			ID:       998,
 			Type:     "system",
@@ -481,6 +483,51 @@ func TestTransfer_Success(t *testing.T) {
 	assert.Contains(t, resp.Message, "Successfully transferred")
 }
 
+func TestTransfer_LockOrdering(t *testing.T) {
+	ctx := context.Background()
+	repo := &MockWalletRepository{}
+	service := NewWalletService(repo)
+
+	repo.GetTransactionByIdempotencyKeyFunc = func(ctx context.Context, key string) (*models.Transaction, error) {
+		return nil, errors.New("no rows found")
+	}
+
+	lockedOrder := []int{}
+	repo.GetAccountByUserIDForUpdateFunc = func(ctx context.Context, tx pgx.Tx, uid int) (*models.Account, error) {
+		lockedOrder = append(lockedOrder, uid)
+		return &models.Account{
+			ID:       int64(uid * 100),
+			UserID:   &uid,
+			Balance:  1000000,
+			Currency: "NGN",
+		}, nil
+	}
+
+	repo.GetSystemAccountForUpdateFunc = func(ctx context.Context, tx pgx.Tx, externalID string) (*models.Account, error) {
+		return &models.Account{
+			ID:       998,
+			Type:     "system",
+			Balance:  0,
+			Currency: "NGN",
+		}, nil
+	}
+
+	req := models.TransferRequest{
+		FromUserID:     5,  // Higher ID
+		ToUserID:       2,  // Lower ID
+		Amount:         10000,
+		Fee:            1000,
+		IdempotencyKey: "txf_order",
+	}
+
+	_, err := service.Transfer(ctx, req)
+
+	require.NoError(t, err)
+	// Verify accounts were locked in ascending order
+	assert.Equal(t, 2, lockedOrder[0], "Should lock lower ID first")
+	assert.Equal(t, 5, lockedOrder[1], "Should lock higher ID second")
+}
+
 func TestTransfer_SameAccount(t *testing.T) {
 	ctx := context.Background()
 	repo := &MockWalletRepository{}
@@ -488,7 +535,7 @@ func TestTransfer_SameAccount(t *testing.T) {
 
 	req := models.TransferRequest{
 		FromUserID:     1,
-		ToUserID:       1, // Same as FromUserID
+		ToUserID:       1,
 		Amount:         100000,
 		IdempotencyKey: "txf_same",
 	}
@@ -506,9 +553,9 @@ func TestTransfer_InsufficientBalanceWithFee(t *testing.T) {
 		return nil, errors.New("no rows found")
 	}
 
-	repo.GetAccountByUserIDFunc = func(ctx context.Context, userID int) (*models.Account, error) {
+	repo.GetAccountByUserIDForUpdateFunc = func(ctx context.Context, tx pgx.Tx, userID int) (*models.Account, error) {
 		return &models.Account{
-			ID:       100,
+			ID:       int64(userID * 100),
 			UserID:   &userID,
 			Balance:  100000, // ₦1000
 			Currency: "NGN",
@@ -523,7 +570,6 @@ func TestTransfer_InsufficientBalanceWithFee(t *testing.T) {
 		IdempotencyKey: "txf_insufficient",
 	}
 
-	// Total needed: 95000 + 10000 = 105000, but balance is only 100000
 	_, err := service.Transfer(ctx, req)
 	assert.ErrorIs(t, err, ErrInsufficientBalance)
 }
@@ -537,7 +583,7 @@ func TestTransfer_NegativeFee(t *testing.T) {
 		FromUserID:     1,
 		ToUserID:       2,
 		Amount:         100000,
-		Fee:            -1000, // Negative fee
+		Fee:            -1000,
 		IdempotencyKey: "txf_negfee",
 	}
 
@@ -614,7 +660,7 @@ func TestGetTransactionHistory_Success(t *testing.T) {
 				ID:        2,
 				Type:      "withdrawal",
 				Status:    "posted",
-				Amount:    50000,
+				Amount:    -50000,
 				Direction: "debit",
 				CreatedAt: now.Add(-1 * time.Hour),
 			},
@@ -641,43 +687,43 @@ func TestGetTransactionHistory_Pagination(t *testing.T) {
 	service := NewWalletService(repo)
 
 	tests := []struct {
-		name           string
-		inputPage      int
-		inputPerPage   int
-		expectedPage   int
+		name            string
+		inputPage       int
+		inputPerPage    int
+		expectedPage    int
 		expectedPerPage int
-		expectedOffset int
+		expectedOffset  int
 	}{
 		{
-			name:           "default values for invalid page",
-			inputPage:      0,
-			inputPerPage:   0,
-			expectedPage:   1,
+			name:            "default values for invalid page",
+			inputPage:       0,
+			inputPerPage:    0,
+			expectedPage:    1,
 			expectedPerPage: 20,
-			expectedOffset: 0,
+			expectedOffset:  0,
 		},
 		{
-			name:           "page 2 with 10 per page",
-			inputPage:      2,
-			inputPerPage:   10,
-			expectedPage:   2,
+			name:            "page 2 with 10 per page",
+			inputPage:       2,
+			inputPerPage:    10,
+			expectedPage:    2,
 			expectedPerPage: 10,
-			expectedOffset: 10,
+			expectedOffset:  10,
 		},
 		{
-			name:           "exceeds max per page",
-			inputPage:      1,
-			inputPerPage:   150,
-			expectedPage:   1,
+			name:            "exceeds max per page",
+			inputPage:       1,
+			inputPerPage:    150,
+			expectedPage:    1,
 			expectedPerPage: 20,
-			expectedOffset: 0,
+			expectedOffset:  0,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var capturedLimit, capturedOffset int
-			
+
 			repo.GetTransactionHistoryFunc = func(ctx context.Context, uid int, limit, offset int) ([]models.TransactionHistoryItem, error) {
 				capturedLimit = limit
 				capturedOffset = offset
@@ -712,7 +758,7 @@ func TestTransactionCommitFailure(t *testing.T) {
 		return nil, errors.New("no rows found")
 	}
 
-	repo.GetAccountByUserIDFunc = func(ctx context.Context, userID int) (*models.Account, error) {
+	repo.GetAccountByUserIDForUpdateFunc = func(ctx context.Context, tx pgx.Tx, userID int) (*models.Account, error) {
 		return &models.Account{
 			ID:       100,
 			UserID:   &userID,
@@ -721,7 +767,7 @@ func TestTransactionCommitFailure(t *testing.T) {
 		}, nil
 	}
 
-	repo.GetSystemAccountFunc = func(ctx context.Context, externalID string) (*models.Account, error) {
+	repo.GetSystemAccountForUpdateFunc = func(ctx context.Context, tx pgx.Tx, externalID string) (*models.Account, error) {
 		return &models.Account{
 			ID:       999,
 			Type:     "system",
@@ -730,7 +776,6 @@ func TestTransactionCommitFailure(t *testing.T) {
 		}, nil
 	}
 
-	// Mock transaction that fails on commit
 	repo.BeginTxFunc = func(ctx context.Context) (pgx.Tx, error) {
 		return &MockTx{
 			CommitFunc: func(ctx context.Context) error {
