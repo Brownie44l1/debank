@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/Brownie44l1/debank/internal/models"
 	"github.com/Brownie44l1/debank/internal/service"
@@ -38,6 +39,15 @@ func NewWalletHandler(service WalletService) *WalletHandler {
 // ==============================================
 // ENDPOINTS
 // ==============================================
+
+// HealthCheck handles GET /api/v1/health
+func (h *WalletHandler) HealthCheck(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "ok",
+		"message": "wallet service is healthy",
+		"time":    time.Now().UTC(),
+	})
+}
 
 // Deposit handles POST /api/v1/deposit
 func (h *WalletHandler) Deposit(c *gin.Context) {
@@ -138,6 +148,7 @@ func (h *WalletHandler) GetTransactionHistory(c *gin.Context) {
 func (h *WalletHandler) RegisterRoutes(router *gin.Engine) {
 	v1 := router.Group("/api/v1")
 	{
+		v1.GET("/health", h.HealthCheck)
 		v1.POST("/deposit", h.Deposit)
 		v1.POST("/withdraw", h.Withdraw)
 		v1.POST("/transfer", h.Transfer)
