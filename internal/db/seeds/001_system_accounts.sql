@@ -11,9 +11,9 @@
 
 BEGIN;
 
-INSERT INTO accounts (external_id, name, type, currency) VALUES
-('sys_reserve', 'Reserve Account', 'system', 'NGN'),
-('sys_fee', 'Fee Account', 'system', 'NGN')
+INSERT INTO accounts (external_id, name, type, currency, balance) VALUES
+('sys_reserve', 'Reserve Account', 'system', 'NGN', 0),
+('sys_fee', 'Fee Account', 'system', 'NGN', 0)
 ON CONFLICT (external_id) DO NOTHING; -- Skip if already exists
 
 COMMIT;

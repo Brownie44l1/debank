@@ -1,58 +1,106 @@
 package models
 
-import "time"
+import (
+	"database/sql"
+	"time"
+)
 
 // ==============================================
-// DATABASE MODELS (Maps to DB tables)
+// ACCOUNT MODEL (Wallet/Bank Account)
 // ==============================================
 
 // Account represents a wallet or system account
 type Account struct {
-	ID         int64     `db:"id"`
-	ExternalID *string   `db:"external_id"`
-	Name       string    `db:"name"`
-	Type       string    `db:"type"`     // 'user', 'system', 'reserve', 'fee'
-	Balance    int64     `db:"balance"`  // In kobo
-	Currency   string    `db:"currency"` // 'NGN'
-	UserID     *int      `db:"user_id"`  // NULL for system accounts
-	CreatedAt  time.Time `db:"created_at"`
+	ID            int64          `db:"id"`
+	AccountNumber sql.NullString `db:"account_number"` // For user accounts
+	ExternalID    sql.NullString `db:"external_id"`    // For system accounts
+	Name          string         `db:"name"`
+	Type          string         `db:"type"`     // 'user', 'system', 'reserve', 'fee'
+	Balance       int64          `db:"balance"`  // In kobo
+	Currency      string         `db:"currency"` // 'NGN'
+	UserID        sql.NullInt32  `db:"user_id"`  // NULL for system accounts
+	BankCode      sql.NullString `db:"bank_code"` // For interbank transfers
+	BankName      sql.NullString `db:"bank_name"`
+	IsActive      bool           `db:"is_active"`
+	FrozenAt      sql.NullTime   `db:"frozen_at"`
+	FrozenReason  sql.NullString `db:"frozen_reason"`
+	CreatedAt     time.Time      `db:"created_at"`
+	UpdatedAt     time.Time      `db:"updated_at"`
 }
 
-// Transaction represents a logical transaction
-type Transaction struct {
-	ID             int64     `db:"id"`
-	IdempotencyKey string    `db:"idempotency_key"`
-	Kind           string    `db:"kind"`      // 'deposit', 'withdrawal', 'p2p'
-	Status         string    `db:"status"`    // 'pending', 'posted', 'failed'
-	Reference      *string   `db:"reference"` // Optional user reference
-	Metadata       []byte    `db:"metadata"`  // JSONB stored as bytes
-	CreatedAt      time.Time `db:"created_at"`
+// IsUserAccount checks if this is a user wallet account
+func (a *Account) IsUserAccount() bool {
+	return a.Type == AccountTypeUser
 }
 
-// Posting represents a debit or credit entry
-type Posting struct {
-	ID            int64     `db:"id"`
-	TransactionID int64     `db:"transaction_id"`
-	AccountID     int64     `db:"account_id"`
-	Amount        int64     `db:"amount"`   // Positive=credit, Negative=debit
-	Currency      string    `db:"currency"` // 'NGN'
-	CreatedAt     time.Time `db:"created_at"`
+// IsSystemAccount checks if this is a system account
+func (a *Account) IsSystemAccount() bool {
+	return a.Type == AccountTypeSystem || a.Type == AccountTypeReserve || a.Type == AccountTypeFee
 }
 
-// TransactionHistoryItem represents a transaction in user's history
-type TransactionHistoryItem struct {
-	ID           int64     `db:"id" json:"id"`
-	Type         string    `db:"kind" json:"type"`          // 'deposit', 'withdrawal', 'p2p'
-	Status       string    `db:"status" json:"status"`      // 'posted', 'failed'
-	Reference    *string   `db:"reference" json:"reference,omitempty"`
-	Amount       int64     `db:"amount" json:"amount"`      // In kobo
-	Direction    string    `db:"direction" json:"direction"` // 'credit' or 'debit'
-	Counterparty *string   `db:"counterparty" json:"counterparty,omitempty"` // Who sent/received
-	CreatedAt    time.Time `db:"created_at" json:"created_at"`
+// IsFrozen checks if account is currently frozen
+func (a *Account) IsFrozen() bool {
+	return a.FrozenAt.Valid
+}
+
+// GetBalanceNGN returns balance in Naira (kobo / 100)
+func (a *Account) GetBalanceNGN() float64 {
+	return float64(a.Balance) / 100.0
 }
 
 // ==============================================
-// REQUEST DTOs (API Input)
+// ACCOUNT TYPE CONSTANTS
+// ==============================================
+const (
+	AccountTypeUser    = "user"
+	AccountTypeSystem  = "system"
+	AccountTypeReserve = "reserve"
+	AccountTypeFee     = "fee"
+)
+
+// ==============================================
+// RESPONSE DTOs (Keep your existing structure)
+// ==============================================
+
+// BalanceResponse for balance queries
+type BalanceResponse struct {
+	UserID        int     `json:"user_id"`
+	AccountNumber string  `json:"account_number"`
+	Balance       int64   `json:"balance"`        // In kobo
+	BalanceNGN    float64 `json:"balance_ngn"`    // In Naira for convenience
+	Currency      string  `json:"currency"`
+}
+
+// TransactionResponse returned after transaction operations
+type TransactionResponse struct {
+	TransactionID int64  `json:"transaction_id"`
+	Reference     string `json:"reference"`
+	Status        string `json:"status"`
+	Balance       int64  `json:"balance"`   // New balance in kobo
+	Message       string `json:"message"`
+}
+
+// TransferResponse for P2P transfers
+type TransferResponse struct {
+	TransactionID    int64  `json:"transaction_id"`
+	Reference        string `json:"reference"`
+	Status           string `json:"status"`
+	SenderBalance    int64  `json:"sender_balance"`
+	RecipientBalance int64  `json:"recipient_balance,omitempty"` // Optional
+	Message          string `json:"message"`
+}
+
+// TransactionHistoryResponse for history queries
+type TransactionHistoryResponse struct {
+	UserID       int                      `json:"user_id"`
+	Transactions []TransactionHistoryItem `json:"transactions"`
+	Total        int                      `json:"total"`
+	Page         int                      `json:"page,omitempty"`
+	PerPage      int                      `json:"per_page,omitempty"`
+}
+
+// ==============================================
+// REQUEST DTOs (Keep your existing structure)
 // ==============================================
 
 // DepositRequest for depositing money
@@ -71,51 +119,13 @@ type WithdrawRequest struct {
 	Reference      string `json:"reference,omitempty"`
 }
 
-// TransferRequest for P2P transfers
+// TransferRequest for P2P transfers (enhanced to support username/phone)
 type TransferRequest struct {
 	FromUserID     int    `json:"from_user_id" binding:"required"`
-	ToUserID       int    `json:"to_user_id" binding:"required"`
+	ToIdentifier   string `json:"to_identifier" binding:"required"` // username, phone, or account number
 	Amount         int64  `json:"amount" binding:"required,gt=0"`
 	Fee            int64  `json:"fee,omitempty"` // Optional fee
+	Pin            string `json:"pin" binding:"required,len=4"` // Transaction PIN
 	IdempotencyKey string `json:"idempotency_key" binding:"required"`
-	Reference      string `json:"reference,omitempty"`
-}
-
-// ==============================================
-// RESPONSE DTOs (API Output)
-// ==============================================
-
-// TransactionResponse returned after transaction operations
-type TransactionResponse struct {
-	TransactionID int64  `json:"transaction_id"`
-	Status        string `json:"status"`
-	Balance       int64  `json:"balance"`   // New balance in kobo
-	Reference     string `json:"reference,omitempty"`
-	Message       string `json:"message"`
-}
-
-// BalanceResponse for balance queries
-type BalanceResponse struct {
-	UserID    int     `json:"user_id"`
-	Balance   int64   `json:"balance"`    // In kobo
-	BalanceNGN float64 `json:"balance_ngn"` // In Naira for convenience
-	Currency  string  `json:"currency"`
-}
-
-// TransactionHistoryResponse for history queries
-type TransactionHistoryResponse struct {
-	UserID       int                      `json:"user_id"`
-	Transactions []TransactionHistoryItem `json:"transactions"`
-	Total        int                      `json:"total"`
-	Page         int                      `json:"page,omitempty"`
-	PerPage      int                      `json:"per_page,omitempty"`
-}
-
-// TransferResponse for P2P transfers
-type TransferResponse struct {
-	TransactionID    int64  `json:"transaction_id"`
-	Status           string `json:"status"`
-	SenderBalance    int64  `json:"sender_balance"`
-	RecipientBalance int64  `json:"recipient_balance,omitempty"` // Optional
-	Message          string `json:"message"`
+	Description    string `json:"description,omitempty"`
 }
