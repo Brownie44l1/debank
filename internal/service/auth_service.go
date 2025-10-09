@@ -85,7 +85,7 @@ func (s *AuthService) Signup(ctx context.Context, req dto.SignupRequest) (*dto.S
 	}
 
 	// 5. Send email verification OTP (async)
-	go s.sendEmailVerificationOTP(context.Background(), user.Email, user.ID)
+	go s.sendEmailVerificationOTP(context.Background(), user.Email, int(user.ID))
 
 	// 6. Build response
 	userDTO := s.userToDTO(user)

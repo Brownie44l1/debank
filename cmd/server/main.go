@@ -38,9 +38,6 @@ func main() {
 	// 4. Setup Gin router
 	router := gin.Default()
 
-	// Health check endpoint (you already have this)
-	//router.GET("/health", handlers.HealthCheck)
-
 	// Register wallet routes
 	walletHandler.RegisterRoutes(router)
 

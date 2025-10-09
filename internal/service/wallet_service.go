@@ -7,6 +7,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/Brownie44l1/debank/internal/api/dto"
 	"github.com/Brownie44l1/debank/internal/models"
 	"github.com/jackc/pgx/v5"
 )
@@ -37,7 +38,7 @@ const (
 	MinWithdrawAmount    = 10000     // ₦100.00 minimum withdrawal
 	MinTransferAmount    = 10000     // ₦100.00 minimum transfer
 	MaxTransactionAmount = 100000000 // ₦1,000,000.00 maximum per transaction
-	DefaultTransferFee   = 5000      // ₦50.00 default transfer fee
+	DefaultTransferFee   = 0         // ₦0.00 (free transfers for now)
 )
 
 // ==============================================
@@ -71,10 +72,10 @@ func NewWalletService(repo WalletRepositoryInterface) *WalletService {
 // DEPOSIT
 // ==============================================
 
-func (s *WalletService) Deposit(ctx context.Context, req models.DepositRequest) (*models.TransactionResponse, error) {
+func (s *WalletService) Deposit(ctx context.Context, userID int, req dto.DepositRequest) (*dto.TransactionResponse, error) {
 	startTime := time.Now()
 	log.Printf("[DEPOSIT] Started - UserID: %d, Amount: %d kobo, IdempotencyKey: %s",
-		req.UserID, req.Amount, req.IdempotencyKey)
+		userID, req.Amount, req.IdempotencyKey)
 
 	// 1. Validate inputs
 	if req.IdempotencyKey == "" {
@@ -92,26 +93,26 @@ func (s *WalletService) Deposit(ctx context.Context, req models.DepositRequest) 
 	}
 	if existingTxn != nil {
 		log.Printf("[DEPOSIT] Idempotent request - Returning existing transaction: %d", existingTxn.ID)
-		return s.buildIdempotentResponse(ctx, existingTxn.ID, req.UserID, req.Reference)
+		return s.buildIdempotentResponse(ctx, existingTxn.ID, userID, req.Reference)
 	}
 
 	// 3. Execute deposit transaction with locking
-	txnID, newBalance, err := s.executeDeposit(ctx, req)
+	txnID, newBalance, err := s.executeDeposit(ctx, userID, req)
 	if err != nil {
-		log.Printf("[DEPOSIT] Failed - UserID: %d, Error: %v", req.UserID, err)
+		log.Printf("[DEPOSIT] Failed - UserID: %d, Error: %v", userID, err)
 		return nil, err
 	}
 
 	// 4. Validate result
 	if newBalance < 0 {
-		log.Printf("[DEPOSIT] CRITICAL - Negative balance! UserID: %d, Balance: %d", req.UserID, newBalance)
+		log.Printf("[DEPOSIT] CRITICAL - Negative balance! UserID: %d, Balance: %d", userID, newBalance)
 		return nil, ErrNegativeBalance
 	}
 
 	duration := time.Since(startTime)
 	log.Printf("[DEPOSIT] Success - TxnID: %d, NewBalance: %d kobo, Duration: %v", txnID, newBalance, duration)
 
-	return &models.TransactionResponse{
+	return &dto.TransactionResponse{
 		TransactionID: txnID,
 		Status:        "posted",
 		Balance:       newBalance,
@@ -120,7 +121,7 @@ func (s *WalletService) Deposit(ctx context.Context, req models.DepositRequest) 
 	}, nil
 }
 
-func (s *WalletService) executeDeposit(ctx context.Context, req models.DepositRequest) (int64, int64, error) {
+func (s *WalletService) executeDeposit(ctx context.Context, userID int, req dto.DepositRequest) (int64, int64, error) {
 	tx, err := s.repo.BeginTx(ctx)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to begin transaction: %w", err)
@@ -129,8 +130,8 @@ func (s *WalletService) executeDeposit(ctx context.Context, req models.DepositRe
 		_ = tx.Rollback(ctx)
 	}()
 
-	// Lock user account (prevents concurrent deposits to same account)
-	userAccount, err := s.repo.GetAccountByUserIDForUpdate(ctx, tx, req.UserID)
+	// Lock user account
+	userAccount, err := s.repo.GetAccountByUserIDForUpdate(ctx, tx, userID)
 	if err != nil {
 		if isAccountNotFoundError(err) {
 			return 0, 0, ErrAccountNotFound
@@ -138,22 +139,33 @@ func (s *WalletService) executeDeposit(ctx context.Context, req models.DepositRe
 		return 0, 0, err
 	}
 
-	// Lock reserve account (prevents concurrent access to reserve)
+	// Lock reserve account
 	reserveAccount, err := s.repo.GetSystemAccountForUpdate(ctx, tx, "sys_reserve")
 	if err != nil {
 		return 0, 0, fmt.Errorf("reserve account not found: %w", err)
 	}
 
+	// Create transaction
 	txn := &models.Transaction{
 		IdempotencyKey: req.IdempotencyKey,
-		Kind:           "deposit",
-		Status:         "posted",
-		Reference:      &req.Reference,
+		Reference:      req.Reference,
+		Kind:           models.TransactionKindDeposit,
+		Status:         models.TransactionStatusPosted,
+		Amount:         req.Amount,
+		Currency:       "NGN",
 	}
+	
+	// Set account IDs
+	txn.FromAccountID.Int64 = reserveAccount.ID
+	txn.FromAccountID.Valid = true
+	txn.ToAccountID.Int64 = userAccount.ID
+	txn.ToAccountID.Valid = true
+
 	if err := s.repo.CreateTransaction(ctx, tx, txn); err != nil {
 		return 0, 0, err
 	}
 
+	// Debit reserve
 	if err := s.repo.CreatePosting(ctx, tx, &models.Posting{
 		TransactionID: txn.ID,
 		AccountID:     reserveAccount.ID,
@@ -163,6 +175,7 @@ func (s *WalletService) executeDeposit(ctx context.Context, req models.DepositRe
 		return 0, 0, err
 	}
 
+	// Credit user
 	if err := s.repo.CreatePosting(ctx, tx, &models.Posting{
 		TransactionID: txn.ID,
 		AccountID:     userAccount.ID,
@@ -176,9 +189,7 @@ func (s *WalletService) executeDeposit(ctx context.Context, req models.DepositRe
 		return 0, 0, fmt.Errorf("failed to commit: %w", err)
 	}
 
-	// Calculate new balance after commit
 	newBalance := userAccount.Balance + req.Amount
-
 	return txn.ID, newBalance, nil
 }
 
@@ -186,10 +197,10 @@ func (s *WalletService) executeDeposit(ctx context.Context, req models.DepositRe
 // WITHDRAW
 // ==============================================
 
-func (s *WalletService) Withdraw(ctx context.Context, req models.WithdrawRequest) (*models.TransactionResponse, error) {
+func (s *WalletService) Withdraw(ctx context.Context, userID int, req dto.WithdrawRequest) (*dto.TransactionResponse, error) {
 	startTime := time.Now()
 	log.Printf("[WITHDRAW] Started - UserID: %d, Amount: %d kobo, IdempotencyKey: %s",
-		req.UserID, req.Amount, req.IdempotencyKey)
+		userID, req.Amount, req.IdempotencyKey)
 
 	if req.IdempotencyKey == "" {
 		return nil, ErrInvalidIdempotencyKey
@@ -205,24 +216,24 @@ func (s *WalletService) Withdraw(ctx context.Context, req models.WithdrawRequest
 	}
 	if existingTxn != nil {
 		log.Printf("[WITHDRAW] Idempotent request - Returning existing transaction: %d", existingTxn.ID)
-		return s.buildIdempotentResponse(ctx, existingTxn.ID, req.UserID, req.Reference)
+		return s.buildIdempotentResponse(ctx, existingTxn.ID, userID, req.Reference)
 	}
 
-	txnID, newBalance, err := s.executeWithdraw(ctx, req)
+	txnID, newBalance, err := s.executeWithdraw(ctx, userID, req)
 	if err != nil {
-		log.Printf("[WITHDRAW] Failed - UserID: %d, Error: %v", req.UserID, err)
+		log.Printf("[WITHDRAW] Failed - UserID: %d, Error: %v", userID, err)
 		return nil, err
 	}
 
 	if newBalance < 0 {
-		log.Printf("[WITHDRAW] CRITICAL - Negative balance! UserID: %d, Balance: %d", req.UserID, newBalance)
+		log.Printf("[WITHDRAW] CRITICAL - Negative balance! UserID: %d, Balance: %d", userID, newBalance)
 		return nil, ErrNegativeBalance
 	}
 
 	duration := time.Since(startTime)
 	log.Printf("[WITHDRAW] Success - TxnID: %d, NewBalance: %d kobo, Duration: %v", txnID, newBalance, duration)
 
-	return &models.TransactionResponse{
+	return &dto.TransactionResponse{
 		TransactionID: txnID,
 		Status:        "posted",
 		Balance:       newBalance,
@@ -231,7 +242,7 @@ func (s *WalletService) Withdraw(ctx context.Context, req models.WithdrawRequest
 	}, nil
 }
 
-func (s *WalletService) executeWithdraw(ctx context.Context, req models.WithdrawRequest) (int64, int64, error) {
+func (s *WalletService) executeWithdraw(ctx context.Context, userID int, req dto.WithdrawRequest) (int64, int64, error) {
 	tx, err := s.repo.BeginTx(ctx)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to begin transaction: %w", err)
@@ -240,8 +251,7 @@ func (s *WalletService) executeWithdraw(ctx context.Context, req models.Withdraw
 		_ = tx.Rollback(ctx)
 	}()
 
-	// Lock user account and check balance atomically
-	userAccount, err := s.repo.GetAccountByUserIDForUpdate(ctx, tx, req.UserID)
+	userAccount, err := s.repo.GetAccountByUserIDForUpdate(ctx, tx, userID)
 	if err != nil {
 		if isAccountNotFoundError(err) {
 			return 0, 0, ErrAccountNotFound
@@ -249,12 +259,10 @@ func (s *WalletService) executeWithdraw(ctx context.Context, req models.Withdraw
 		return 0, 0, err
 	}
 
-	// Check sufficient balance while holding lock
 	if userAccount.Balance < req.Amount {
 		return 0, 0, ErrInsufficientBalance
 	}
 
-	// Lock reserve account
 	reserveAccount, err := s.repo.GetSystemAccountForUpdate(ctx, tx, "sys_reserve")
 	if err != nil {
 		return 0, 0, fmt.Errorf("reserve account not found: %w", err)
@@ -262,10 +270,18 @@ func (s *WalletService) executeWithdraw(ctx context.Context, req models.Withdraw
 
 	txn := &models.Transaction{
 		IdempotencyKey: req.IdempotencyKey,
-		Kind:           "withdrawal",
-		Status:         "posted",
-		Reference:      &req.Reference,
+		Reference:      req.Reference,
+		Kind:           models.TransactionKindWithdraw,
+		Status:         models.TransactionStatusPosted,
+		Amount:         req.Amount,
+		Currency:       "NGN",
 	}
+	
+	txn.FromAccountID.Int64 = userAccount.ID
+	txn.FromAccountID.Valid = true
+	txn.ToAccountID.Int64 = reserveAccount.ID
+	txn.ToAccountID.Valid = true
+
 	if err := s.repo.CreateTransaction(ctx, tx, txn); err != nil {
 		return 0, 0, err
 	}
@@ -293,177 +309,14 @@ func (s *WalletService) executeWithdraw(ctx context.Context, req models.Withdraw
 	}
 
 	newBalance := userAccount.Balance - req.Amount
-
 	return txn.ID, newBalance, nil
 }
 
 // ==============================================
-// TRANSFER (CRITICAL - Deadlock Prevention)
+// GET BALANCE
 // ==============================================
 
-func (s *WalletService) Transfer(ctx context.Context, req models.TransferRequest) (*models.TransferResponse, error) {
-	startTime := time.Now()
-	log.Printf("[TRANSFER] Started - From: %d, To: %d, Amount: %d kobo, Fee: %d kobo",
-		req.FromUserID, req.ToUserID, req.Amount, req.Fee)
-
-	if req.IdempotencyKey == "" {
-		return nil, ErrInvalidIdempotencyKey
-	}
-	if req.FromUserID == req.ToUserID {
-		return nil, ErrSameAccount
-	}
-	if err := s.validateTransferAmount(req.Amount); err != nil {
-		log.Printf("[TRANSFER] Validation failed: %v", err)
-		return nil, err
-	}
-	if req.Fee < 0 {
-		return nil, ErrInvalidAmount
-	}
-
-	existingTxn, err := s.repo.GetTransactionByIdempotencyKey(ctx, req.IdempotencyKey)
-	if err != nil && !isNoRowsError(err) {
-		return nil, fmt.Errorf("idempotency check failed: %w", err)
-	}
-	if existingTxn != nil {
-		log.Printf("[TRANSFER] Idempotent request - Returning existing transaction: %d", existingTxn.ID)
-		return s.buildIdempotentTransferResponse(ctx, existingTxn.ID, req.FromUserID, req.ToUserID)
-	}
-
-	txnID, senderBalance, recipientBalance, err := s.executeTransfer(ctx, req)
-	if err != nil {
-		log.Printf("[TRANSFER] Failed - Error: %v", err)
-		return nil, err
-	}
-
-	duration := time.Since(startTime)
-	log.Printf("[TRANSFER] Success - TxnID: %d, Duration: %v", txnID, duration)
-
-	return &models.TransferResponse{
-		TransactionID:    txnID,
-		Status:           "posted",
-		SenderBalance:    senderBalance,
-		RecipientBalance: recipientBalance,
-		Message:          fmt.Sprintf("Successfully transferred ₦%.2f", float64(req.Amount)/100),
-	}, nil
-}
-
-func (s *WalletService) executeTransfer(ctx context.Context, req models.TransferRequest) (int64, int64, int64, error) {
-	tx, err := s.repo.BeginTx(ctx)
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer func() {
-		_ = tx.Rollback(ctx)
-	}()
-
-	// CRITICAL: Lock accounts in consistent order to prevent deadlocks
-	// Always lock the account with lower user_id first
-	firstUserID := req.FromUserID
-	secondUserID := req.ToUserID
-	if req.ToUserID < req.FromUserID {
-		firstUserID = req.ToUserID
-		secondUserID = req.FromUserID
-	}
-
-	log.Printf("[TRANSFER] Locking accounts in order: %d, %d", firstUserID, secondUserID)
-
-	// Lock first account
-	firstAccount, err := s.repo.GetAccountByUserIDForUpdate(ctx, tx, firstUserID)
-	if err != nil {
-		if isAccountNotFoundError(err) {
-			return 0, 0, 0, ErrAccountNotFound
-		}
-		return 0, 0, 0, err
-	}
-
-	// Lock second account
-	secondAccount, err := s.repo.GetAccountByUserIDForUpdate(ctx, tx, secondUserID)
-	if err != nil {
-		if isAccountNotFoundError(err) {
-			return 0, 0, 0, ErrAccountNotFound
-		}
-		return 0, 0, 0, err
-	}
-
-	// Map back to sender/recipient
-	var senderAccount, recipientAccount *models.Account
-	if firstUserID == req.FromUserID {
-		senderAccount = firstAccount
-		recipientAccount = secondAccount
-	} else {
-		senderAccount = secondAccount
-		recipientAccount = firstAccount
-	}
-
-	// Check sufficient balance while holding locks
-	totalDebit := req.Amount + req.Fee
-	if senderAccount.Balance < totalDebit {
-		return 0, 0, 0, ErrInsufficientBalance
-	}
-
-	txn := &models.Transaction{
-		IdempotencyKey: req.IdempotencyKey,
-		Kind:           "p2p",
-		Status:         "posted",
-		Reference:      &req.Reference,
-	}
-	if err := s.repo.CreateTransaction(ctx, tx, txn); err != nil {
-		return 0, 0, 0, err
-	}
-
-	// Debit sender
-	if err := s.repo.CreatePosting(ctx, tx, &models.Posting{
-		TransactionID: txn.ID,
-		AccountID:     senderAccount.ID,
-		Amount:        -totalDebit,
-		Currency:      "NGN",
-	}); err != nil {
-		return 0, 0, 0, err
-	}
-
-	// Credit recipient
-	if err := s.repo.CreatePosting(ctx, tx, &models.Posting{
-		TransactionID: txn.ID,
-		AccountID:     recipientAccount.ID,
-		Amount:        req.Amount,
-		Currency:      "NGN",
-	}); err != nil {
-		return 0, 0, 0, err
-	}
-
-	// Handle fee if present
-	if req.Fee > 0 {
-		feeAccount, err := s.repo.GetSystemAccountForUpdate(ctx, tx, "sys_fee")
-		if err != nil {
-			return 0, 0, 0, fmt.Errorf("fee account not found: %w", err)
-		}
-
-		if err := s.repo.CreatePosting(ctx, tx, &models.Posting{
-			TransactionID: txn.ID,
-			AccountID:     feeAccount.ID,
-			Amount:        req.Fee,
-			Currency:      "NGN",
-		}); err != nil {
-			return 0, 0, 0, err
-		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return 0, 0, 0, fmt.Errorf("failed to commit: %w", err)
-	}
-
-	// Calculate final balances
-	senderBalance := senderAccount.Balance - totalDebit
-	recipientBalance := recipientAccount.Balance + req.Amount
-
-	return txn.ID, senderBalance, recipientBalance, nil
-}
-
-// ==============================================
-// GET BALANCE & HISTORY
-// ==============================================
-
-func (s *WalletService) GetBalance(ctx context.Context, userID int) (*models.BalanceResponse, error) {
+func (s *WalletService) GetBalance(ctx context.Context, userID int) (*dto.BalanceResponse, error) {
 	log.Printf("[GET_BALANCE] UserID: %d", userID)
 
 	account, err := s.repo.GetAccountByUserID(ctx, userID)
@@ -474,15 +327,25 @@ func (s *WalletService) GetBalance(ctx context.Context, userID int) (*models.Bal
 		return nil, err
 	}
 
-	return &models.BalanceResponse{
-		UserID:     userID,
-		Balance:    account.Balance,
-		BalanceNGN: float64(account.Balance) / 100,
-		Currency:   account.Currency,
+	accountNumber := ""
+	if account.AccountNumber.Valid {
+		accountNumber = account.AccountNumber.String
+	}
+
+	return &dto.BalanceResponse{
+		UserID:        userID,
+		AccountNumber: accountNumber,
+		Balance:       account.Balance,
+		BalanceNGN:    float64(account.Balance) / 100,
+		Currency:      account.Currency,
 	}, nil
 }
 
-func (s *WalletService) GetTransactionHistory(ctx context.Context, userID, page, perPage int) (*models.TransactionHistoryResponse, error) {
+// ==============================================
+// GET TRANSACTION HISTORY
+// ==============================================
+
+func (s *WalletService) GetTransactionHistory(ctx context.Context, userID, page, perPage int) (*dto.TransactionHistoryResponse, error) {
 	log.Printf("[GET_HISTORY] UserID: %d, Page: %d, PerPage: %d", userID, page, perPage)
 
 	if page < 1 {
@@ -507,11 +370,28 @@ func (s *WalletService) GetTransactionHistory(ctx context.Context, userID, page,
 		return nil, err
 	}
 
+	// Convert to DTOs
+	dtoTransactions := make([]dto.TransactionHistoryItem, len(transactions))
+	for i, txn := range transactions {
+		dtoTransactions[i] = dto.TransactionHistoryItem{
+			ID:           txn.ID,
+			Reference:    txn.Reference,
+			Type:         txn.Type,
+			Status:       txn.Status,
+			Amount:       txn.Amount,
+			AmountNGN:    float64(txn.Amount) / 100,
+			Description:  txn.Description,
+			Direction:    txn.Direction,
+			Counterparty: txn.Counterparty,
+			CreatedAt:    txn.CreatedAt.Format(time.RFC3339),
+		}
+	}
+
 	log.Printf("[GET_HISTORY] Success - UserID: %d, Found: %d/%d transactions", userID, len(transactions), total)
 
-	return &models.TransactionHistoryResponse{
+	return &dto.TransactionHistoryResponse{
 		UserID:       userID,
-		Transactions: transactions,
+		Transactions: dtoTransactions,
 		Total:        total,
 		Page:         page,
 		PerPage:      perPage,
@@ -559,48 +439,4 @@ func (s *WalletService) validateTransferAmount(amount int64) error {
 		return fmt.Errorf("%w: maximum per transaction is ₦%.2f", ErrAmountTooLarge, float64(MaxTransactionAmount)/100)
 	}
 	return nil
-}
-
-func (s *WalletService) buildIdempotentResponse(ctx context.Context, txnID int64, userID int, reference string) (*models.TransactionResponse, error) {
-	account, err := s.repo.GetAccountByUserID(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-
-	return &models.TransactionResponse{
-		TransactionID: txnID,
-		Status:        "posted",
-		Balance:       account.Balance,
-		Reference:     reference,
-		Message:       "Transaction already processed (idempotent)",
-	}, nil
-}
-
-func (s *WalletService) buildIdempotentTransferResponse(ctx context.Context, txnID int64, fromUserID, toUserID int) (*models.TransferResponse, error) {
-	senderAccount, err := s.repo.GetAccountByUserID(ctx, fromUserID)
-	if err != nil {
-		return nil, err
-	}
-
-	recipientAccount, err := s.repo.GetAccountByUserID(ctx, toUserID)
-	if err != nil {
-		return nil, err
-	}
-
-	return &models.TransferResponse{
-		TransactionID:    txnID,
-		Status:           "posted",
-		SenderBalance:    senderAccount.Balance,
-		RecipientBalance: recipientAccount.Balance,
-		Message:          "Transaction already processed (idempotent)",
-	}, nil
-}
-
-// Error helper functions
-func isNoRowsError(err error) bool {
-	return err != nil && (err.Error() == "no rows found" || errors.Is(err, errors.New("no rows found")))
-}
-
-func isAccountNotFoundError(err error) bool {
-	return err != nil && (err.Error() == "account not found" || errors.Is(err, errors.New("account not found")))
 }
