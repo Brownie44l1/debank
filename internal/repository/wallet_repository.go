@@ -155,101 +155,6 @@ func (r *WalletRepository) GetSystemAccount(ctx context.Context, externalID stri
 	return &acc, nil
 }
 
-// ==============================================
-// ACCOUNT QUERIES (WITH LOCKING - for updates)
-// ==============================================
-
-// GetAccountByUserIDForUpdate retrieves and locks a user's account for update
-// This prevents concurrent modifications to the same account
-func (r *WalletRepository) GetAccountByUserIDForUpdate(ctx context.Context, tx pgx.Tx, userID int) (*models.Account, error) {
-	query := `
-		SELECT id, external_id, name, type, balance, currency, user_id, created_at
-		FROM accounts
-		WHERE user_id = $1
-		FOR UPDATE
-	`
-
-	var acc models.Account
-	err := tx.QueryRow(ctx, query, userID).Scan(
-		&acc.ID,
-		&acc.ExternalID,
-		&acc.Name,
-		&acc.Type,
-		&acc.Balance,
-		&acc.Currency,
-		&acc.UserID,
-		&acc.CreatedAt,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrAccountNotFound
-		}
-		return nil, fmt.Errorf("failed to lock account: %w", err)
-	}
-
-	return &acc, nil
-}
-
-// GetAccountByIDForUpdate retrieves and locks an account by ID
-func (r *WalletRepository) GetAccountByIDForUpdate(ctx context.Context, tx pgx.Tx, accountID int64) (*models.Account, error) {
-	query := `
-		SELECT id, external_id, name, type, balance, currency, user_id, created_at
-		FROM accounts
-		WHERE id = $1
-		FOR UPDATE
-	`
-
-	var acc models.Account
-	err := tx.QueryRow(ctx, query, accountID).Scan(
-		&acc.ID,
-		&acc.ExternalID,
-		&acc.Name,
-		&acc.Type,
-		&acc.Balance,
-		&acc.Currency,
-		&acc.UserID,
-		&acc.CreatedAt,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrAccountNotFound
-		}
-		return nil, fmt.Errorf("failed to lock account: %w", err)
-	}
-
-	return &acc, nil
-}
-
-// GetSystemAccountForUpdate retrieves and locks a system account
-func (r *WalletRepository) GetSystemAccountForUpdate(ctx context.Context, tx pgx.Tx, externalID string) (*models.Account, error) {
-	query := `
-		SELECT id, external_id, name, type, balance, currency, user_id, created_at
-		FROM accounts
-		WHERE external_id = $1 AND type = 'system'
-		FOR UPDATE
-	`
-
-	var acc models.Account
-	err := tx.QueryRow(ctx, query, externalID).Scan(
-		&acc.ID,
-		&acc.ExternalID,
-		&acc.Name,
-		&acc.Type,
-		&acc.Balance,
-		&acc.Currency,
-		&acc.UserID,
-		&acc.CreatedAt,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrAccountNotFound
-		}
-		return nil, fmt.Errorf("failed to lock system account: %w", err)
-	}
-
-	return &acc, nil
-}
-
 // GetAccountByAccountNumber retrieves an account by account number (for user accounts)
 func (r *WalletRepository) GetAccountByAccountNumber(ctx context.Context, accountNumber string) (*models.Account, error) {
 	query := `
@@ -282,6 +187,125 @@ func (r *WalletRepository) GetAccountByAccountNumber(ctx context.Context, accoun
 			return nil, ErrAccountNotFound
 		}
 		return nil, fmt.Errorf("failed to get account by account number: %w", err)
+	}
+
+	return &acc, nil
+}
+
+// ==============================================
+// ACCOUNT QUERIES (WITH LOCKING - for updates)
+// ==============================================
+
+// GetAccountByUserIDForUpdate retrieves and locks a user's account for update
+// This prevents concurrent modifications to the same account
+func (r *WalletRepository) GetAccountByUserIDForUpdate(ctx context.Context, tx pgx.Tx, userID int) (*models.Account, error) {
+	query := `
+		SELECT id, account_number, external_id, name, type, balance, currency, user_id,
+		       bank_code, bank_name, is_active, frozen_at, frozen_reason, created_at, updated_at
+		FROM accounts
+		WHERE user_id = $1
+		FOR UPDATE
+	`
+
+	var acc models.Account
+	err := tx.QueryRow(ctx, query, userID).Scan(
+		&acc.ID,
+		&acc.AccountNumber,
+		&acc.ExternalID,
+		&acc.Name,
+		&acc.Type,
+		&acc.Balance,
+		&acc.Currency,
+		&acc.UserID,
+		&acc.BankCode,
+		&acc.BankName,
+		&acc.IsActive,
+		&acc.FrozenAt,
+		&acc.FrozenReason,
+		&acc.CreatedAt,
+		&acc.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrAccountNotFound
+		}
+		return nil, fmt.Errorf("failed to lock account: %w", err)
+	}
+
+	return &acc, nil
+}
+
+// GetAccountByIDForUpdate retrieves and locks an account by ID
+func (r *WalletRepository) GetAccountByIDForUpdate(ctx context.Context, tx pgx.Tx, accountID int64) (*models.Account, error) {
+	query := `
+		SELECT id, account_number, external_id, name, type, balance, currency, user_id,
+		       bank_code, bank_name, is_active, frozen_at, frozen_reason, created_at, updated_at
+		FROM accounts
+		WHERE id = $1
+		FOR UPDATE
+	`
+
+	var acc models.Account
+	err := tx.QueryRow(ctx, query, accountID).Scan(
+		&acc.ID,
+		&acc.AccountNumber,
+		&acc.ExternalID,
+		&acc.Name,
+		&acc.Type,
+		&acc.Balance,
+		&acc.Currency,
+		&acc.UserID,
+		&acc.BankCode,
+		&acc.BankName,
+		&acc.IsActive,
+		&acc.FrozenAt,
+		&acc.FrozenReason,
+		&acc.CreatedAt,
+		&acc.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrAccountNotFound
+		}
+		return nil, fmt.Errorf("failed to lock account: %w", err)
+	}
+
+	return &acc, nil
+}
+
+// GetSystemAccountForUpdate retrieves and locks a system account
+func (r *WalletRepository) GetSystemAccountForUpdate(ctx context.Context, tx pgx.Tx, externalID string) (*models.Account, error) {
+	query := `
+		SELECT id, account_number, external_id, name, type, balance, currency, user_id,
+		       bank_code, bank_name, is_active, frozen_at, frozen_reason, created_at, updated_at
+		FROM accounts
+		WHERE external_id = $1 AND type IN ('system', 'reserve', 'fee')
+		FOR UPDATE
+	`
+
+	var acc models.Account
+	err := tx.QueryRow(ctx, query, externalID).Scan(
+		&acc.ID,
+		&acc.AccountNumber,
+		&acc.ExternalID,
+		&acc.Name,
+		&acc.Type,
+		&acc.Balance,
+		&acc.Currency,
+		&acc.UserID,
+		&acc.BankCode,
+		&acc.BankName,
+		&acc.IsActive,
+		&acc.FrozenAt,
+		&acc.FrozenReason,
+		&acc.CreatedAt,
+		&acc.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrAccountNotFound
+		}
+		return nil, fmt.Errorf("failed to lock system account: %w", err)
 	}
 
 	return &acc, nil
@@ -332,7 +356,9 @@ func (r *WalletRepository) GetAccountByAccountNumberForUpdate(ctx context.Contex
 // GetTransactionByID retrieves a transaction by ID
 func (r *WalletRepository) GetTransactionByID(ctx context.Context, txnID int64) (*models.Transaction, error) {
 	query := `
-		SELECT id, idempotency_key, kind, status, reference, metadata, created_at
+		SELECT id, idempotency_key, reference, kind, status, amount, currency,
+		       from_account_id, to_account_id, from_identifier, to_identifier,
+		       description, metadata, created_at, posted_at, failed_at, failure_reason
 		FROM transactions
 		WHERE id = $1
 	`
@@ -341,11 +367,21 @@ func (r *WalletRepository) GetTransactionByID(ctx context.Context, txnID int64) 
 	err := r.db.QueryRow(ctx, query, txnID).Scan(
 		&txn.ID,
 		&txn.IdempotencyKey,
+		&txn.Reference,
 		&txn.Kind,
 		&txn.Status,
-		&txn.Reference,
+		&txn.Amount,
+		&txn.Currency,
+		&txn.FromAccountID,
+		&txn.ToAccountID,
+		&txn.FromIdentifier,
+		&txn.ToIdentifier,
+		&txn.Description,
 		&txn.Metadata,
 		&txn.CreatedAt,
+		&txn.PostedAt,
+		&txn.FailedAt,
+		&txn.FailureReason,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -360,7 +396,9 @@ func (r *WalletRepository) GetTransactionByID(ctx context.Context, txnID int64) 
 // GetTransactionByIdempotencyKey checks if idempotency key exists
 func (r *WalletRepository) GetTransactionByIdempotencyKey(ctx context.Context, key string) (*models.Transaction, error) {
 	query := `
-		SELECT id, idempotency_key, kind, status, reference, metadata, created_at
+		SELECT id, idempotency_key, reference, kind, status, amount, currency,
+		       from_account_id, to_account_id, from_identifier, to_identifier,
+		       description, metadata, created_at, posted_at, failed_at, failure_reason
 		FROM transactions
 		WHERE idempotency_key = $1
 	`
@@ -369,11 +407,21 @@ func (r *WalletRepository) GetTransactionByIdempotencyKey(ctx context.Context, k
 	err := r.db.QueryRow(ctx, query, key).Scan(
 		&txn.ID,
 		&txn.IdempotencyKey,
+		&txn.Reference,
 		&txn.Kind,
 		&txn.Status,
-		&txn.Reference,
+		&txn.Amount,
+		&txn.Currency,
+		&txn.FromAccountID,
+		&txn.ToAccountID,
+		&txn.FromIdentifier,
+		&txn.ToIdentifier,
+		&txn.Description,
 		&txn.Metadata,
 		&txn.CreatedAt,
+		&txn.PostedAt,
+		&txn.FailedAt,
+		&txn.FailureReason,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -388,16 +436,27 @@ func (r *WalletRepository) GetTransactionByIdempotencyKey(ctx context.Context, k
 // CreateTransaction creates a new transaction record within a transaction
 func (r *WalletRepository) CreateTransaction(ctx context.Context, tx pgx.Tx, txn *models.Transaction) error {
 	query := `
-		INSERT INTO transactions (idempotency_key, kind, status, reference, metadata)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO transactions (
+			idempotency_key, reference, kind, status, amount, currency,
+			from_account_id, to_account_id, from_identifier, to_identifier,
+			description, metadata
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id, created_at
 	`
 
 	err := tx.QueryRow(ctx, query,
 		txn.IdempotencyKey,
+		txn.Reference,
 		txn.Kind,
 		txn.Status,
-		txn.Reference,
+		txn.Amount,
+		txn.Currency,
+		txn.FromAccountID,
+		txn.ToAccountID,
+		txn.FromIdentifier,
+		txn.ToIdentifier,
+		txn.Description,
 		txn.Metadata,
 	).Scan(&txn.ID, &txn.CreatedAt)
 
@@ -481,10 +540,11 @@ func (r *WalletRepository) GetTransactionHistory(ctx context.Context, userID int
 	query := `
 		SELECT 
 			t.id,
+			t.reference,
 			t.kind,
 			t.status,
-			t.reference,
-			p.amount,
+			t.amount,
+			t.description,
 			CASE 
 				WHEN p.amount > 0 THEN 'credit'
 				ELSE 'debit'
@@ -514,10 +574,11 @@ func (r *WalletRepository) GetTransactionHistory(ctx context.Context, userID int
 		var item models.TransactionHistoryItem
 		err := rows.Scan(
 			&item.ID,
+			&item.Reference,
 			&item.Type,
 			&item.Status,
-			&item.Reference,
 			&item.Amount,
+			&item.Description,
 			&item.Direction,
 			&item.Counterparty,
 			&item.CreatedAt,
