@@ -1,51 +1,51 @@
 package models
 
 import (
-	"database/sql"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // ==============================================
 // TRANSACTION MODELS
 // ==============================================
 
-// Transaction represents a logical transaction
 type Transaction struct {
-	ID              int64          `db:"id"`
-	IdempotencyKey  string         `db:"idempotency_key"`
-	Reference       string         `db:"reference"`
-	Kind            string         `db:"kind"`   // 'p2p', 'deposit', 'withdrawal', 'fee', 'interbank', 'refund'
-	Status          string         `db:"status"` // 'pending', 'posted', 'failed', 'reversed'
-	Amount          int64          `db:"amount"` // In kobo
-	Currency        string         `db:"currency"`
-	FromAccountID   sql.NullInt64  `db:"from_account_id"`
-	ToAccountID     sql.NullInt64  `db:"to_account_id"`
-	FromIdentifier  sql.NullString `db:"from_identifier"` // username/phone used
-	ToIdentifier    sql.NullString `db:"to_identifier"`   // username/phone used
-	Description     sql.NullString `db:"description"`
-	Metadata        sql.NullString `db:"metadata"` // JSON string
-	CreatedAt       time.Time      `db:"created_at"`
-	PostedAt        sql.NullTime   `db:"posted_at"`
-	FailedAt        sql.NullTime   `db:"failed_at"`
-	FailureReason   sql.NullString `db:"failure_reason"`
+	ID             int64            `db:"id"`
+	IdempotencyKey string           `db:"idempotency_key"`
+	Reference      string           `db:"reference"`
+	Kind           string           `db:"kind"`   // 'p2p', 'deposit', 'withdrawal', 'fee', 'interbank', 'refund'
+	Status         string           `db:"status"` // 'pending', 'posted', 'failed', 'reversed'
+	Amount         int64            `db:"amount"` // In kobo
+	Currency       string           `db:"currency"`
+	FromAccountID  pgtype.Int8      `db:"from_account_id"`
+	ToAccountID    pgtype.Int8      `db:"to_account_id"`
+	FromIdentifier pgtype.Text      `db:"from_identifier"` // username/phone used
+	ToIdentifier   pgtype.Text      `db:"to_identifier"`   // username/phone used
+	Description    pgtype.Text      `db:"description"`
+	Metadata       pgtype.Text      `db:"metadata"` // JSON string
+	CreatedAt      time.Time        `db:"created_at"`
+	PostedAt       pgtype.Timestamp `db:"posted_at"`
+	FailedAt       pgtype.Timestamp `db:"failed_at"`
+	FailureReason  pgtype.Text      `db:"failure_reason"`
 }
 
-// IsPending checks if transaction is still pending
 func (t *Transaction) IsPending() bool {
 	return t.Status == TransactionStatusPending
 }
 
-// IsPosted checks if transaction is successfully posted
 func (t *Transaction) IsPosted() bool {
 	return t.Status == TransactionStatusPosted
 }
 
-// IsFailed checks if transaction has failed
 func (t *Transaction) IsFailed() bool {
 	return t.Status == TransactionStatusFailed
 }
 
-// Posting represents a debit or credit entry (double-entry bookkeeping)
+// ==============================================
+// POSTING MODEL
+// ==============================================
+
 type Posting struct {
 	ID            int64     `db:"id"`
 	TransactionID int64     `db:"transaction_id"`
@@ -55,12 +55,10 @@ type Posting struct {
 	CreatedAt     time.Time `db:"created_at"`
 }
 
-// IsCredit checks if this posting is a credit (positive amount)
 func (p *Posting) IsCredit() bool {
 	return p.Amount > 0
 }
 
-// IsDebit checks if this posting is a debit (negative amount)
 func (p *Posting) IsDebit() bool {
 	return p.Amount < 0
 }
@@ -69,7 +67,6 @@ func (p *Posting) IsDebit() bool {
 // TRANSACTION CONSTANTS
 // ==============================================
 
-// Transaction Kinds
 const (
 	TransactionKindP2P       = "p2p"
 	TransactionKindDeposit   = "deposit"
@@ -79,7 +76,6 @@ const (
 	TransactionKindRefund    = "refund"
 )
 
-// Transaction Statuses
 const (
 	TransactionStatusPending  = "pending"
 	TransactionStatusPosted   = "posted"
@@ -91,15 +87,14 @@ const (
 // TRANSACTION HISTORY (for user-facing display)
 // ==============================================
 
-// TransactionHistoryItem represents a transaction in user's history
 type TransactionHistoryItem struct {
 	ID           int64      `db:"id" json:"id"`
 	Reference    string     `db:"reference" json:"reference"`
-	Type         string     `db:"kind" json:"type"`       // 'p2p', 'deposit', etc.
-	Status       string     `db:"status" json:"status"`   // 'posted', 'failed'
-	Amount       int64      `db:"amount" json:"amount"`   // In kobo
+	Type         string     `db:"kind" json:"type"`         // 'p2p', 'deposit', etc.
+	Status       string     `db:"status" json:"status"`     // 'posted', 'failed'
+	Amount       int64      `db:"amount" json:"amount"`     // In kobo
 	Description  *string    `db:"description" json:"description,omitempty"`
-	Direction    string     `json:"direction"`            // 'credit' or 'debit' (computed)
+	Direction    string     `json:"direction"`              // 'credit' or 'debit' (computed)
 	Counterparty *string    `json:"counterparty,omitempty"` // Who sent/received (computed)
 	CreatedAt    time.Time  `db:"created_at" json:"created_at"`
 }

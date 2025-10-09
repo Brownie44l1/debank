@@ -47,7 +47,8 @@ func (r *WalletRepository) BeginTx(ctx context.Context) (pgx.Tx, error) {
 // GetAccountByID retrieves an account by its ID (no lock)
 func (r *WalletRepository) GetAccountByID(ctx context.Context, accountID int64) (*models.Account, error) {
 	query := `
-		SELECT id, external_id, name, type, balance, currency, user_id, created_at
+		SELECT id, account_number, external_id, name, type, balance, currency, user_id,
+		       bank_code, bank_name, is_active, frozen_at, frozen_reason, created_at, updated_at
 		FROM accounts
 		WHERE id = $1
 	`
@@ -55,13 +56,20 @@ func (r *WalletRepository) GetAccountByID(ctx context.Context, accountID int64) 
 	var acc models.Account
 	err := r.db.QueryRow(ctx, query, accountID).Scan(
 		&acc.ID,
+		&acc.AccountNumber,
 		&acc.ExternalID,
 		&acc.Name,
 		&acc.Type,
 		&acc.Balance,
 		&acc.Currency,
 		&acc.UserID,
+		&acc.BankCode,
+		&acc.BankName,
+		&acc.IsActive,
+		&acc.FrozenAt,
+		&acc.FrozenReason,
 		&acc.CreatedAt,
+		&acc.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -76,7 +84,8 @@ func (r *WalletRepository) GetAccountByID(ctx context.Context, accountID int64) 
 // GetAccountByUserID retrieves a user's wallet account (no lock)
 func (r *WalletRepository) GetAccountByUserID(ctx context.Context, userID int) (*models.Account, error) {
 	query := `
-		SELECT id, external_id, name, type, balance, currency, user_id, created_at
+		SELECT id, account_number, external_id, name, type, balance, currency, user_id,
+		       bank_code, bank_name, is_active, frozen_at, frozen_reason, created_at, updated_at
 		FROM accounts
 		WHERE user_id = $1
 	`
@@ -84,13 +93,20 @@ func (r *WalletRepository) GetAccountByUserID(ctx context.Context, userID int) (
 	var acc models.Account
 	err := r.db.QueryRow(ctx, query, userID).Scan(
 		&acc.ID,
+		&acc.AccountNumber,
 		&acc.ExternalID,
 		&acc.Name,
 		&acc.Type,
 		&acc.Balance,
 		&acc.Currency,
 		&acc.UserID,
+		&acc.BankCode,
+		&acc.BankName,
+		&acc.IsActive,
+		&acc.FrozenAt,
+		&acc.FrozenReason,
 		&acc.CreatedAt,
+		&acc.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -105,21 +121,29 @@ func (r *WalletRepository) GetAccountByUserID(ctx context.Context, userID int) (
 // GetSystemAccount retrieves a system account by external_id (no lock)
 func (r *WalletRepository) GetSystemAccount(ctx context.Context, externalID string) (*models.Account, error) {
 	query := `
-		SELECT id, external_id, name, type, balance, currency, user_id, created_at
+		SELECT id, account_number, external_id, name, type, balance, currency, user_id,
+		       bank_code, bank_name, is_active, frozen_at, frozen_reason, created_at, updated_at
 		FROM accounts
-		WHERE external_id = $1 AND type = 'system'
+		WHERE external_id = $1 AND type IN ('system', 'reserve', 'fee')
 	`
 
 	var acc models.Account
 	err := r.db.QueryRow(ctx, query, externalID).Scan(
 		&acc.ID,
+		&acc.AccountNumber,
 		&acc.ExternalID,
 		&acc.Name,
 		&acc.Type,
 		&acc.Balance,
 		&acc.Currency,
 		&acc.UserID,
+		&acc.BankCode,
+		&acc.BankName,
+		&acc.IsActive,
+		&acc.FrozenAt,
+		&acc.FrozenReason,
 		&acc.CreatedAt,
+		&acc.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -221,6 +245,81 @@ func (r *WalletRepository) GetSystemAccountForUpdate(ctx context.Context, tx pgx
 			return nil, ErrAccountNotFound
 		}
 		return nil, fmt.Errorf("failed to lock system account: %w", err)
+	}
+
+	return &acc, nil
+}
+
+// GetAccountByAccountNumber retrieves an account by account number (for user accounts)
+func (r *WalletRepository) GetAccountByAccountNumber(ctx context.Context, accountNumber string) (*models.Account, error) {
+	query := `
+		SELECT id, account_number, external_id, name, type, balance, currency, user_id, 
+		       bank_code, bank_name, is_active, frozen_at, frozen_reason, created_at, updated_at
+		FROM accounts
+		WHERE account_number = $1
+	`
+
+	var acc models.Account
+	err := r.db.QueryRow(ctx, query, accountNumber).Scan(
+		&acc.ID,
+		&acc.AccountNumber,
+		&acc.ExternalID,
+		&acc.Name,
+		&acc.Type,
+		&acc.Balance,
+		&acc.Currency,
+		&acc.UserID,
+		&acc.BankCode,
+		&acc.BankName,
+		&acc.IsActive,
+		&acc.FrozenAt,
+		&acc.FrozenReason,
+		&acc.CreatedAt,
+		&acc.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrAccountNotFound
+		}
+		return nil, fmt.Errorf("failed to get account by account number: %w", err)
+	}
+
+	return &acc, nil
+}
+
+// GetAccountByAccountNumberForUpdate retrieves and locks an account by account number
+func (r *WalletRepository) GetAccountByAccountNumberForUpdate(ctx context.Context, tx pgx.Tx, accountNumber string) (*models.Account, error) {
+	query := `
+		SELECT id, account_number, external_id, name, type, balance, currency, user_id,
+		       bank_code, bank_name, is_active, frozen_at, frozen_reason, created_at, updated_at
+		FROM accounts
+		WHERE account_number = $1
+		FOR UPDATE
+	`
+
+	var acc models.Account
+	err := tx.QueryRow(ctx, query, accountNumber).Scan(
+		&acc.ID,
+		&acc.AccountNumber,
+		&acc.ExternalID,
+		&acc.Name,
+		&acc.Type,
+		&acc.Balance,
+		&acc.Currency,
+		&acc.UserID,
+		&acc.BankCode,
+		&acc.BankName,
+		&acc.IsActive,
+		&acc.FrozenAt,
+		&acc.FrozenReason,
+		&acc.CreatedAt,
+		&acc.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrAccountNotFound
+		}
+		return nil, fmt.Errorf("failed to lock account by account number: %w", err)
 	}
 
 	return &acc, nil
